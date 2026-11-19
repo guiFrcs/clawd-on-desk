@@ -1784,6 +1784,15 @@ function loadAgentsTabForTest({
           rowStartWithClaude: "Start with Claude Code",
           rowStartWithClaudeDesc: "Launches Clawd when a Claude Code session starts.",
           rowStartWithClaudeDisabledDesc: "Requires automatic Claude hook management.",
+          rowClaudeConfigDirs: "Claude config folders",
+          rowClaudeConfigDirsDesc: "Clawd installs its hooks in every folder listed here.",
+          claudeConfigDirAdd: "Add folder…",
+          claudeConfigDirRemove: "Remove",
+          claudeConfigDirPrimary: "Folder Clawd was started with",
+          claudeConfigDirMissing: "Folder not found",
+          claudeConfigDirLabelPlaceholder: "Label",
+          claudeConfigDirLabelAria: "Label for {dir}",
+          toastClaudeConfigDirAdded: "Hooks installed in the Claude config folder",
           rowClaudeQuotaCollection: "Read local Claude quota and context usage",
           rowClaudeQuotaCollectionDesc: "Claude quota desc",
           rowCodexHookHealthNotify: "Warn me when the approval hook stops working",
@@ -4643,7 +4652,10 @@ describe("settings renderer browser environment", () => {
     assert.ok(portPicker, "remote forward port should use the shared Settings picker");
     const portHint = portPicker.parentNode.querySelector(".remote-ssh-field-hint");
     assert.ok(portHint, "remote forward port should explain its availability requirement");
-    assert.equal(portHint.textContent, "Listening port on the remote host. Choose a port that is not already in use.");
+    assert.equal(
+      portHint.textContent,
+      "Loopback port on the remote host used by reverse forwarding or Jump host mode. It is not exposed publicly; choose another value if it is occupied.",
+    );
     assert.equal(getSelectedPickerValue(portPicker), "23333");
     choosePickerOption(portPicker, "23336");
 
@@ -13680,9 +13692,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.getSwitchMeta("quotaMergeSources").row.style.display, "");
   });
 
-  it("lets the user pick which providers draw beside the pet, hiding by exception", async () => {
-    // The cluster caps at four coins and the renderer takes the first four in
-    // provider order, so without this the user has no say over which survive.
+  it("lets the user materialize actual providers through the selection command", async () => {
     const updateCalls = [];
     const harness = loadGeneralTabForTest({
       tab: "sessions",
@@ -13690,12 +13700,12 @@ describe("settings renderer browser environment", () => {
       settingsAPI: {
         getQuotaSourceCount: async () => 1,
         getQuotaRingProviders: async () => ([
-          { key: "claudeQuota", label: "Claude", hidden: false },
-          { key: "codexQuota", label: "Codex", hidden: true },
-          { key: "kimiQuota", label: "Kimi", hidden: false },
+          { key: "claudeQuota", label: "Claude", shown: true, coinCount: 1, shownCoinCount: 1 },
+          { key: "codexQuota", label: "Codex", shown: false, coinCount: 1, shownCoinCount: 0 },
+          { key: "kimiQuota", label: "Kimi", shown: true, coinCount: 1, shownCoinCount: 1 },
         ]),
-        update: (key, value) => {
-          updateCalls.push({ key, value });
+        command: (action, payload) => {
+          updateCalls.push({ action, payload: JSON.parse(JSON.stringify(payload)) });
           return Promise.resolve({ status: "ok" });
         },
       },
@@ -13712,28 +13722,25 @@ describe("settings renderer browser environment", () => {
       rows.map((row) => row.dataset.providerKey),
       ["claudeQuota", "codexQuota", "kimiQuota"]
     );
-    // The switch reads as "shown", the stored preference records what is hidden.
+    // Switches reflect the actual visible set, including the automatic cap.
     const switches = rows.map((row) => row.querySelector(".switch"));
     assert.strictEqual(switches[0].classList.contains("on"), true, "Claude draws");
     assert.strictEqual(switches[1].classList.contains("on"), false, "Codex is hidden");
     assert.strictEqual(switches[2].classList.contains("on"), true, "Kimi draws");
 
-    // Hiding one appends to the list rather than replacing it, or turning off a
-    // second provider would quietly bring the first one back.
+    // The first toggle passes the visible providers, not all unhidden providers.
     switches[2].eventListeners.click[0]();
-    await Promise.resolve();
-    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
     assert.deepStrictEqual(updateCalls, [
-      { key: "quotaRingHiddenProviders", value: ["codexQuota", "kimiQuota"] },
+      { action: "setQuotaRingProviderShown", payload: { key: "kimiQuota", shown: false, currentShownProviders: ["claudeQuota", "kimiQuota"] } },
     ]);
 
     // Re-showing removes only that key.
     updateCalls.length = 0;
     switches[1].eventListeners.click[0]();
-    await Promise.resolve();
-    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
     assert.deepStrictEqual(updateCalls, [
-      { key: "quotaRingHiddenProviders", value: [] },
+      { action: "setQuotaRingProviderShown", payload: { key: "codexQuota", shown: true, currentShownProviders: ["claudeQuota"] } },
     ]);
   });
 
@@ -13752,11 +13759,11 @@ describe("settings renderer browser environment", () => {
         snapshot: makeGeneralSnapshot({ quotaRingHiddenProviders: ["codexQuota"] }),
         settingsAPI: {
           getQuotaRingProviders: async () => ([
-            { key: "codexQuota", label: "Codex" },
-            { key: "kimiQuota", label: "Kimi" },
+            { key: "codexQuota", label: "Codex", shown: false, coinCount: 1, shownCoinCount: 0 },
+            { key: "kimiQuota", label: "Kimi", shown: true, coinCount: 1, shownCoinCount: 1 },
           ]),
-          update: (key, value) => {
-            calls.push({ key, value });
+          command: (action, payload) => {
+            calls.push({ action, payload: JSON.parse(JSON.stringify(payload)) });
             return calls.length === 1 ? scenario.reply() : Promise.resolve({ status: "ok" });
           },
         },
@@ -13781,11 +13788,214 @@ describe("settings renderer browser environment", () => {
       sw.dispatchEvent({ type: "click" });
       await new Promise((resolve) => setImmediate(resolve));
       assert.equal(calls.length, 2, "the same mounted control must allow retry");
-      assert.deepStrictEqual(calls[1], { key: "quotaRingHiddenProviders", value: ["codexQuota", "kimiQuota"] });
+      assert.deepStrictEqual(calls[1], { action: "setQuotaRingProviderShown", payload: { key: "kimiQuota", shown: false, currentShownProviders: ["kimiQuota"] } });
       assert.equal(sw.getAttribute("aria-checked"), "false");
       assert.equal(sw.getAttribute("aria-busy"), "false", "success must not depend on receiving a broadcast");
     });
   }
+
+  it("disables off providers at three coins and refreshes sources without reopening", async () => {
+    const providers = [
+      { key: "claudeQuota", label: "Claude", shown: true, coinCount: 2, shownCoinCount: 2 },
+      { key: "codexQuota", label: "Codex", shown: true, coinCount: 1, shownCoinCount: 1 },
+      { key: "kimiQuota", label: "Kimi", shown: false, coinCount: 1, shownCoinCount: 0 },
+    ];
+    const calls = [];
+    const harness = loadGeneralTabForTest({ tab: "sessions",
+      snapshot: makeGeneralSnapshot({ quotaRingShownProviders: ["claudeQuota", "codexQuota"] }),
+      settingsAPI: { getQuotaRingProviders: async () => providers,
+        command: (action, payload) => { calls.push({ action, payload: JSON.parse(JSON.stringify(payload)) }); return { status: "ok" }; } },
+    });
+    harness.renderContent();
+    await new Promise(resolve => setImmediate(resolve));
+    const block = harness.content.querySelector(".quota-ring-providers");
+    const switches = () => block.querySelectorAll(".quota-ring-provider-row").map(row => row.querySelector(".switch"));
+    assert.strictEqual(switches()[2].getAttribute("aria-disabled"), "true");
+    assert.strictEqual(block.querySelector(".quota-ring-providers-limit").style.display, "");
+    switches()[2].dispatchEvent({ type: "click" });
+    assert.strictEqual(calls.length, 0);
+    switches()[1].dispatchEvent({ type: "click" });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(switches()[2].getAttribute("aria-disabled"), "false", "turning off frees a coin");
+    assert.strictEqual(switches()[1].getAttribute("aria-checked"), "false", "vacancy stays empty");
+    harness.core.tabs.sessions.applyQuotaRingProviders([
+      { key: "antigravityQuota", label: "Antigravity", shown: false, coinCount: 2, shownCoinCount: 0 },
+      { ...providers[0] }, { ...providers[1], shown: false, shownCoinCount: 0 }, providers[2],
+    ]);
+    assert.strictEqual(switches().length, 4, "new source appears on the mounted page");
+    assert.strictEqual(switches()[0].getAttribute("aria-checked"), "false");
+    assert.strictEqual(switches()[0].getAttribute("aria-disabled"), "true", "two-source provider cannot exceed the remaining coin budget");
+    assert.strictEqual(calls.length, 1, "source changes never select a provider");
+    harness.core.tabs.sessions.applyQuotaRingProviders([providers[2]]);
+    assert.strictEqual(block.style.display, "none", "one remaining provider hides the block");
+    assert.strictEqual(block.querySelectorAll(".quota-ring-provider-row").length, 0);
+  });
+
+  it("lets absent selected providers release a full manual selection", async () => {
+    const geometry = require("../src/quota-ring-geometry");
+    const { commandRegistry } = require("../src/settings-actions");
+    const saved = { quotaRingShownProviders: ["antigravityQuota", "claudeQuota", "codexQuota"] };
+    const quota = { accountQuota: [{
+      claudeQuota: { group: { claudeFiveHour: { usedPercent: 10 } } },
+      kimiQuota: { group: { kimiWeekly: { usedPercent: 10 } } },
+    }] };
+    const harness = loadGeneralTabForTest({ tab: "sessions",
+      snapshot: makeGeneralSnapshot(saved),
+      settingsAPI: {
+        getQuotaRingProviders: async () => geometry.listQuotaRingProviders(quota, [], saved.quotaRingShownProviders),
+        command: async (_name, payload) => {
+          const result = commandRegistry.setQuotaRingProviderShown(payload, { snapshot: saved });
+          if (result.commit) Object.assign(saved, result.commit);
+          return result;
+        },
+      },
+    });
+    harness.renderContent();
+    await new Promise(resolve => setImmediate(resolve));
+    const block = harness.content.querySelector(".quota-ring-providers");
+    const rows = () => block.querySelectorAll(".quota-ring-provider-row");
+    const row = key => rows().find(entry => entry.dataset.providerKey === key);
+    assert.strictEqual(rows().length, 4);
+    assert.strictEqual(row("antigravityQuota").querySelector(".switch").getAttribute("aria-checked"), "true");
+    assert.strictEqual(row("antigravityQuota").querySelector(".switch").getAttribute("aria-disabled"), "false");
+    assert.ok(row("antigravityQuota").querySelector(".quota-ring-provider-no-data"));
+    assert.strictEqual(row("kimiQuota").querySelector(".switch").getAttribute("aria-disabled"), "true");
+    assert.strictEqual(block.querySelector(".quota-ring-providers-limit").style.display, "");
+    row("antigravityQuota").querySelector(".switch").dispatchEvent({ type: "click" });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(row("antigravityQuota").querySelector(".switch").getAttribute("aria-checked"), "false");
+    assert.strictEqual(row("kimiQuota").querySelector(".switch").getAttribute("aria-disabled"), "false");
+    row("kimiQuota").querySelector(".switch").dispatchEvent({ type: "click" });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepStrictEqual(Array.from(saved.quotaRingShownProviders), ["claudeQuota", "codexQuota", "kimiQuota"]);
+  });
+
+  for (const changed of [false, true]) {
+    it(`keeps a pending toggle after ${changed ? "changed" : "identical"} provider pushes and a delayed success`, async () => {
+      let resolveSave;
+      const providers = ["claudeQuota", "kimiQuota"].map(key => ({ key, shown: true, coinCount: 1, shownCoinCount: 1 }));
+      const harness = loadGeneralTabForTest({ tab: "sessions", snapshot: makeGeneralSnapshot({}),
+        settingsAPI: { getQuotaRingProviders: async () => providers,
+          command: () => new Promise(resolve => { resolveSave = resolve; }) },
+      });
+      harness.renderContent();
+      await new Promise(resolve => setImmediate(resolve));
+      const block = harness.content.querySelector(".quota-ring-providers");
+      const currentSwitch = () => block.querySelectorAll(".quota-ring-provider-row")[1].querySelector(".switch");
+      currentSwitch().dispatchEvent({ type: "click" });
+      await Promise.resolve();
+      const pushed = changed ? providers.map(provider => ({ ...provider, coinCount: 2 })) : providers;
+      harness.core.tabs.sessions.applyQuotaRingProviders(pushed);
+      assert.strictEqual(currentSwitch().getAttribute("aria-checked"), "false", "pushes preserve pending intent");
+      resolveSave({ status: "ok" });
+      await new Promise(resolve => setImmediate(resolve));
+      assert.strictEqual(currentSwitch().getAttribute("aria-checked"), "false", "success preserves the committed toggle");
+      assert.strictEqual(currentSwitch().getAttribute("aria-busy"), "false");
+    });
+  }
+
+  it("shows the provider limit hint only when an off switch is blocked", async () => {
+    const providers = ["antigravityQuota", "claudeQuota", "codexQuota"].map(key => ({
+      key, shown: true, coinCount: 1, shownCoinCount: 1,
+    }));
+    const harness = loadGeneralTabForTest({ tab: "sessions", snapshot: makeGeneralSnapshot({}),
+      settingsAPI: { getQuotaRingProviders: async () => providers },
+    });
+    harness.renderContent();
+    await new Promise(resolve => setImmediate(resolve));
+    const block = harness.content.querySelector(".quota-ring-providers");
+    const hint = block.querySelector(".quota-ring-providers-limit");
+    assert.strictEqual(hint.style.display, "none", "three enabled providers are not an error");
+    harness.core.tabs.sessions.applyQuotaRingProviders([
+      ...providers, { key: "kimiQuota", shown: false, coinCount: 1, shownCoinCount: 0 },
+    ]);
+    assert.strictEqual(hint.style.display, "");
+    harness.core.tabs.sessions.applyQuotaRingProviders([
+      { ...providers[0], coinCount: 2, shownCoinCount: 2 },
+      { key: "kimiQuota", shown: false, coinCount: 2, shownCoinCount: 0 },
+    ]);
+    assert.strictEqual(hint.style.display, "", "a two-source provider can exceed a partially filled budget");
+  });
+
+  it("keeps successive manual toggles consistent before settings broadcasts arrive", async () => {
+    const keys = ["claudeQuota", "codexQuota", "kimiQuota"];
+    const harness = loadGeneralTabForTest({ tab: "sessions",
+      snapshot: makeGeneralSnapshot({ quotaRingShownProviders: keys }),
+      settingsAPI: { getQuotaRingProviders: async () => keys.map(key => ({ key, shown: true, coinCount: 1, shownCoinCount: 1 })),
+        command: async () => ({ status: "ok" }) },
+    });
+    harness.renderContent();
+    await new Promise(resolve => setImmediate(resolve));
+    const switches = harness.content.querySelectorAll(".quota-ring-provider-row").map(row => row.querySelector(".switch"));
+    switches[1].dispatchEvent({ type: "click" });
+    await new Promise(resolve => setImmediate(resolve));
+    switches[2].dispatchEvent({ type: "click" });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(switches[0].getAttribute("aria-checked"), "true");
+    assert.strictEqual(switches[1].getAttribute("aria-checked"), "false");
+    assert.strictEqual(switches[2].getAttribute("aria-checked"), "false");
+  });
+
+  it("keeps a newer provider notification when the initial query resolves late", async () => {
+    let resolveQuery;
+    const harness = loadGeneralTabForTest({ tab: "sessions", snapshot: makeGeneralSnapshot({}),
+      settingsAPI: { getQuotaRingProviders: () => new Promise(resolve => { resolveQuery = resolve; }) },
+    });
+    harness.renderContent();
+    const providers = ["claudeQuota", "kimiQuota"].map(key => ({ key, shown: true, coinCount: 1, shownCoinCount: 1 }));
+    harness.core.tabs.sessions.applyQuotaRingProviders(providers);
+    const block = harness.content.querySelector(".quota-ring-providers");
+    const firstRow = block.querySelector(".quota-ring-provider-row");
+    harness.core.tabs.sessions.applyQuotaRingProviders(providers);
+    assert.strictEqual(block.querySelector(".quota-ring-provider-row"), firstRow, "unchanged metadata preserves mounted controls");
+    resolveQuery([]);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(block.querySelectorAll(".quota-ring-provider-row").length, 2);
+  });
+
+  it("keeps an empty source notification when the initial provider query is stale", async () => {
+    let resolveQuery;
+    const harness = loadGeneralTabForTest({ tab: "sessions", snapshot: makeGeneralSnapshot({}),
+      settingsAPI: { getQuotaRingProviders: () => new Promise(resolve => { resolveQuery = resolve; }) },
+    });
+    harness.renderContent();
+    harness.core.tabs.sessions.applyQuotaRingProviders([]);
+    resolveQuery(["claudeQuota", "kimiQuota"].map(key => ({ key, shown: true, coinCount: 1, shownCoinCount: 1 })));
+    await new Promise(resolve => setImmediate(resolve));
+    const block = harness.content.querySelector(".quota-ring-providers");
+    assert.strictEqual(block.style.display, "none");
+    assert.strictEqual(block.querySelectorAll(".quota-ring-provider-row").length, 0);
+  });
+
+  it("settles a pending selection when sources disappear during the save", async () => {
+    let resolveSave;
+    const toasts = [];
+    const providers = ["claudeQuota", "kimiQuota"].map(key => ({ key, shown: true, coinCount: 1, shownCoinCount: 1 }));
+    const harness = loadGeneralTabForTest({ tab: "sessions", snapshot: makeGeneralSnapshot({}),
+      settingsAPI: { getQuotaRingProviders: async () => providers,
+        command: () => new Promise(resolve => { resolveSave = resolve; }) },
+    });
+    harness.core.ops.showToast = message => toasts.push(message);
+    harness.renderContent();
+    await new Promise(resolve => setImmediate(resolve));
+    harness.content.querySelector(".quota-ring-provider-row .switch").dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    harness.core.tabs.sessions.applyQuotaRingProviders([providers[0]]);
+    resolveSave({ status: "ok" });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(harness.content.querySelector(".quota-ring-providers").style.display, "none");
+    assert.deepStrictEqual(toasts, []);
+  });
+
+  it("wires provider-change notifications through preload and the settings shell", () => {
+    const main = fs.readFileSync(path.join(SRC_DIR, "main.js"), "utf8");
+    const preload = fs.readFileSync(path.join(SRC_DIR, "preload-settings.js"), "utf8");
+    const shell = fs.readFileSync(path.join(SRC_DIR, "settings-renderer.js"), "utf8");
+    assert.ok(main.includes('broadcastSettingsWindow("settings:quota-ring-providers-changed"'));
+    assert.ok(preload.includes('ipcRenderer.on("settings:quota-ring-providers-changed"'));
+    assert.ok(shell.includes("settingsAPI.onQuotaRingProvidersChanged"));
+    assert.ok(shell.includes("applyQuotaRingProviders"));
+  });
 
   it("offers no provider list when only one provider reports", async () => {
     // One connected provider cannot crowd anything out, so the control would be
@@ -16591,6 +16801,178 @@ describe("settings renderer browser environment", () => {
     assert.ok(agentsSource.includes("agent-subgroup"));
     assert.ok(agentsSource.includes("function syncAgentSwitchDisabledState("));
     assert.ok(!agentsSource.includes("full re-render"));
+  });
+
+  it("renders DeepSeek balance connection, reconnect and two-step local key removal", async () => {
+    let configured = false;
+    let enabled = false;
+    let agentEnabled = true;
+    let connectionState = "unconfigured";
+    const calls = [];
+    const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+    const harness = loadAgentsTabForTest({
+      snapshot: { deepseekBalanceCollectionEnabled: false,
+        agents: { "deepseek-harness": { integrationInstalled: true, enabled: true } },
+        customApplications: [], customToolDiscoveryPaths: [] },
+      agentMetadata: [{ id: "deepseek-harness", name: "DeepSeek Harness", eventSource: "hook", capabilities: {} }],
+      settingsAPI: {
+        getDeepseekBalanceStatus: async () => ({ status: "ok", configured, decryptable: configured,
+          collectionEnabled: enabled, agentEnabled, state: connectionState }),
+        connectDeepseekBalance: async (key) => {
+          calls.push(["connect", key]); configured = true; enabled = true; connectionState = "fresh";
+          return { status: "ok" };
+        },
+        reconnectDeepseekBalance: async () => { calls.push(["reconnect"]); enabled = true; return { status: "ok" }; },
+        disconnectDeepseekBalance: async () => {
+          calls.push(["disconnect"]); enabled = false; connectionState = "configured-disabled";
+          return { status: "ok" };
+        },
+        forgetDeepseekBalanceCredential: async () => {
+          calls.push(["forget"]); configured = false; connectionState = "unconfigured";
+          return { status: "ok" };
+        },
+        openExternal: async (url) => calls.push(["external", url]),
+        command: async (...args) => { calls.push(["generic", ...args]); return { status: "ok" }; },
+      },
+    });
+    harness.core.runtime.agentInstallationHintsFetched = true;
+    harness.core.ops.requestRender({ content: true }); await flush();
+    const card = harness.content.querySelector(".deepseek-balance-card");
+    assert.ok(card);
+    harness.content.querySelector(".deepseek-balance-row-action").dispatchEvent({ type: "click" });
+    const input = card.querySelector("input");
+    assert.strictEqual(input.type, "password");
+    input.value = "sk-renderer-deepseek";
+    card.querySelector(".deepseek-balance-connect").dispatchEvent({ type: "click" });
+    assert.strictEqual(input.value, ""); await flush();
+    assert.deepStrictEqual(calls[0], ["connect", "sk-renderer-deepseek"]);
+    assert.strictEqual(card.querySelector(".deepseek-balance-forget").disabled, true);
+    assert.strictEqual(card.querySelector(".deepseek-balance-status").textContent, "deepseekBalanceStatusFresh");
+    card.querySelector(".deepseek-balance-console").dispatchEvent({ type: "click" }); await flush();
+    assert.ok(calls.some((call) => call[1] === "https://platform.deepseek.com/api_keys"));
+    card.querySelector(".deepseek-balance-disconnect").dispatchEvent({ type: "click" }); await flush();
+    assert.strictEqual(card.querySelector(".deepseek-balance-forget").disabled, false);
+    assert.strictEqual(card.querySelector(".deepseek-balance-status").textContent,
+      "deepseekBalanceStatusConfiguredDisabled");
+    card.querySelector(".deepseek-balance-reconnect").dispatchEvent({ type: "click" }); await flush();
+    assert.ok(calls.some((call) => call[0] === "reconnect"));
+    enabled = false; agentEnabled = false; connectionState = "agent-disabled";
+    card.querySelector(".deepseek-balance-disconnect").dispatchEvent({ type: "click" }); await flush();
+    card.querySelector(".deepseek-balance-forget").dispatchEvent({ type: "click" }); await flush();
+    assert.ok(calls.some((call) => call[0] === "forget"));
+    assert.ok(!calls.some((call) => call[0] === "generic" && JSON.stringify(call).includes("sk-renderer-deepseek")));
+  });
+
+  it("updates a mounted DeepSeek balance card after a background rejection", async () => {
+    const status = { status: "ok", configured: true, decryptable: true,
+      collectionEnabled: true, agentEnabled: true, state: "fresh" };
+    let deferredRead = null;
+    let defer = false;
+    const h = loadAgentsTabForTest({
+      snapshot: { agents: { "deepseek-harness": { enabled: true, integrationInstalled: true } } },
+      agentMetadata: [{ id: "deepseek-harness", name: "DeepSeek Harness", eventSource: "hook", capabilities: {} }],
+      settingsAPI: { getDeepseekBalanceStatus: () => defer
+        ? new Promise((resolve) => { deferredRead = resolve; }) : Promise.resolve(status) },
+    });
+    h.core.runtime.agentInstallationHintsFetched = true;
+    h.core.ops.requestRender({ content: true });
+    await new Promise((resolve) => setImmediate(resolve));
+    const card = h.content.querySelector(".deepseek-balance-card");
+    const line = card.querySelector(".deepseek-balance-status");
+    assert.strictEqual(line.textContent, "deepseekBalanceStatusFresh");
+    defer = true;
+    h.content.querySelector(".deepseek-balance-row-action").dispatchEvent({ type: "click" });
+    h.core.tabs.agents.applyDeepseekBalanceStatus({ ...status, state: "credential-rejected" });
+    assert.strictEqual(line.textContent, "deepseekBalanceStatusRejected");
+    deferredRead(status);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(line.textContent, "deepseekBalanceStatusRejected");
+  });
+
+  it("updates the replacement DeepSeek card when a connection finishes during rebuild", async () => {
+    let status = { status: "ok", configured: false, decryptable: false,
+      collectionEnabled: false, agentEnabled: true, state: "unconfigured" };
+    let finishConnect;
+    const h = loadAgentsTabForTest({
+      snapshot: { agents: { "deepseek-harness": { enabled: true, integrationInstalled: true } } },
+      agentMetadata: [{ id: "deepseek-harness", name: "DeepSeek Harness", eventSource: "hook", capabilities: {} }],
+      settingsAPI: {
+        getDeepseekBalanceStatus: async () => ({ ...status }),
+        connectDeepseekBalance: () => {
+          status = { ...status, configured: true, decryptable: true, collectionEnabled: true, state: "refreshing" };
+          return new Promise((resolve) => { finishConnect = resolve; });
+        },
+      },
+    });
+    h.core.runtime.agentInstallationHintsFetched = true;
+    h.core.ops.requestRender({ content: true });
+    await new Promise((resolve) => setImmediate(resolve));
+    const oldCard = h.content.querySelector(".deepseek-balance-card");
+    oldCard.querySelector("input").value = "sk-rebuild-secret";
+    oldCard.querySelector(".deepseek-balance-connect").dispatchEvent({ type: "click" });
+    h.core.ops.applyChanges({ changes: { deepseekBalanceCollectionEnabled: true } });
+    h.raf.flush();
+    await new Promise((resolve) => setImmediate(resolve));
+    const card = h.content.querySelector(".deepseek-balance-card");
+    assert.notStrictEqual(card, oldCard);
+    assert.strictEqual(card.querySelector(".deepseek-balance-status").textContent, "deepseekBalanceStatusRefreshing");
+    status = { ...status, state: "fresh" };
+    h.core.tabs.agents.applyDeepseekBalanceStatus(status);
+    finishConnect({ status: "ok" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(card.querySelector(".deepseek-balance-status").textContent, "deepseekBalanceStatusFresh");
+    assert.strictEqual(card.querySelector("input").value, "");
+  });
+
+  it("shows localized retry messages for DeepSeek transient errors in all seven languages", async () => {
+    require("../src/settings-i18n");
+    const catalogs = globalThis.ClawdSettingsI18n.STRINGS;
+    const states = {
+      "rate-limited": "RateLimited",
+      "payment-required": "PaymentRequired",
+      timeout: "Timeout",
+      "network-error": "NetworkError",
+      "server-error": "ServerError",
+      "malformed-response": "MalformedResponse",
+      "response-too-large": "MalformedResponse",
+      "http-error": "HttpError",
+    };
+    for (const lang of ["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"]) {
+      const status = { status: "ok", configured: true, decryptable: true,
+        collectionEnabled: true, agentEnabled: true, state: "fresh" };
+      const h = loadAgentsTabForTest({
+        snapshot: { lang, agents: { "deepseek-harness": { enabled: true, integrationInstalled: true } } },
+        agentMetadata: [{ id: "deepseek-harness", name: "DeepSeek Harness", eventSource: "hook", capabilities: {} }],
+        i18nStrings: catalogs,
+        settingsAPI: {
+          getDeepseekBalanceStatus: async () => status,
+          reconnectDeepseekBalance: async () => ({ status: "error", reason: "rate-limited" }),
+        },
+      });
+      h.core.runtime.agentInstallationHintsFetched = true;
+      h.core.ops.requestRender({ content: true });
+      await new Promise((resolve) => setImmediate(resolve));
+      const card = h.content.querySelector(".deepseek-balance-card");
+      const line = card.querySelector(".deepseek-balance-status");
+      for (const [state, suffix] of Object.entries(states)) {
+        h.core.tabs.agents.applyDeepseekBalanceStatus({ ...status, state, reason: state });
+        const expected = catalogs[lang][`deepseekBalanceStatus${suffix}`];
+        assert.ok(expected);
+        assert.strictEqual(line.textContent, expected);
+        assert.ok(!line.textContent.includes(state));
+      }
+      card.querySelector(".deepseek-balance-reconnect").dispatchEvent({ type: "click" });
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.strictEqual(line.textContent, catalogs[lang].deepseekBalanceStatusRateLimited);
+    }
+  });
+
+  it("routes DeepSeek balance pushes through preload and the settings shell", () => {
+    const preload = fs.readFileSync(path.join(SRC_DIR, "preload-settings.js"), "utf8");
+    const shell = fs.readFileSync(path.join(SRC_DIR, "settings-renderer.js"), "utf8");
+    assert.ok(preload.includes('ipcRenderer.on("settings:deepseek-balance-status-changed"'));
+    assert.ok(shell.includes("settingsAPI.onDeepseekBalanceStatusChanged"));
+    assert.ok(shell.includes("applyDeepseekBalanceStatus"));
   });
 
   it("renders Kimi quota as an explicit manual-only encrypted-key workflow", async () => {
@@ -21451,6 +21833,88 @@ describe("settings renderer browser environment", () => {
       .map((row) => row.querySelector(".row-label")._textContent);
   }
 
+  for (const installed of [false, true]) {
+    it(`PR #1329 follow-up: adding a folder shows the ${installed ? "installed" : "listed"} toast`, async () => {
+      const harness = loadAgentsTabForTest({
+        i18nStrings: loadSettingsI18nForTest(),
+        snapshot: { agents: { "claude-code": { integrationInstalled: true, enabled: true } } },
+        agentMetadata: [{ id: "claude-code", name: "Claude Code", eventSource: "hook", capabilities: {} }],
+        settingsAPI: {
+          getClaudeConfigDirs: async () => ({ status: "ok", dirs: [] }),
+          pickClaudeConfigDir: async () => ({ status: "ok", path: "/profile-work" }),
+          command: async () => ({ status: "ok", installed }),
+        },
+      });
+      const toasts = [];
+      harness.core.ops.showToast = (message) => toasts.push(message);
+      harness.core.ops.requestRender({ content: true });
+      await new Promise((resolve) => setImmediate(resolve));
+      harness.content.querySelector(".claude-config-dir-add").click();
+      await new Promise((resolve) => setImmediate(resolve));
+      const strings = loadSettingsI18nForTest();
+      const key = installed ? "toastClaudeConfigDirAdded" : "toastClaudeConfigDirListed";
+      assert.strictEqual(typeof strings.en[key], "string");
+      assert.deepStrictEqual(toasts, [strings.en[key]]);
+    });
+  }
+
+  it("PR #1329 follow-up: translates the listed-only folder toast in every supported language", () => {
+    const strings = loadSettingsI18nForTest();
+    for (const lang of SUPPORTED_LANGS) {
+      assert.strictEqual(typeof strings[lang].toastClaudeConfigDirListed, "string", lang);
+      assert.ok(strings[lang].toastClaudeConfigDirListed.length > 0, lang);
+      assert.notStrictEqual(strings[lang].toastClaudeConfigDirListed, strings[lang].toastClaudeConfigDirAdded, lang);
+    }
+  });
+
+  it("lists Claude config folders with labels and removes only extra folders (#1250)", async () => {
+    const calls = [];
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          "claude-code": { integrationInstalled: true, enabled: true, configDirs: [{ dir: "/home/u/.claude-work", label: "" }] },
+        },
+      },
+      agentMetadata: [
+        { id: "claude-code", name: "Claude Code", eventSource: "hook", capabilities: { permissionApproval: true } },
+      ],
+      settingsAPI: {
+        getClaudeConfigDirs: async () => ({
+          status: "ok",
+          dirs: [
+            { dir: "/home/u/.claude", label: "default", primary: true, exists: true },
+            { dir: "/home/u/.claude-work", label: "work", primary: false, exists: false },
+          ],
+        }),
+        command: async (command, payload) => {
+          calls.push([command, payload]);
+          return { status: "ok" };
+        },
+      },
+    });
+    // First render starts the folder fetch; the next one shows its result.
+    harness.core.ops.requestRender({ content: true });
+    await new Promise((resolve) => setImmediate(resolve));
+    harness.core.ops.requestRender({ content: true });
+
+    const claude = findAgentCard(harness.content, "Claude Code");
+    assert.deepStrictEqual(detailGroupRows(claude, "Connection"), [
+      "Manage hooks automatically",
+      "Start with Claude Code",
+      "Claude config folders",
+      "/home/u/.claude",
+      "/home/u/.claude-work",
+    ]);
+    const primaryRow = findAgentRow(claude, "/home/u/.claude");
+    const workRow = findAgentRow(claude, "/home/u/.claude-work");
+    assert.strictEqual(primaryRow.querySelector(".claude-config-dir-remove"), null);
+    assert.match(collectText(workRow), /Folder not found/);
+
+    workRow.querySelector(".claude-config-dir-remove").click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(JSON.stringify(calls[0]), JSON.stringify(["removeClaudeConfigDir", { dir: "/home/u/.claude-work" }]));
+  });
+
   it("renders the five status-line cases from local state", async () => {
     const customId = "custom-status-ai-0123456789ab";
     const connected = loadAgentsTabForTest({
@@ -21701,7 +22165,7 @@ describe("settings renderer browser environment", () => {
     assert.deepStrictEqual(detailGroupLabels(claude), ["Approvals", "Alerts", "Connection", "Quota"]);
     assert.deepStrictEqual(detailGroupRows(claude, "Approvals"), ["Permissions", "Subagent permissions"]);
     assert.deepStrictEqual(detailGroupRows(claude, "Alerts"), ["Idle alerts"]);
-    assert.deepStrictEqual(detailGroupRows(claude, "Connection"), ["Manage hooks automatically", "Start with Claude Code"]);
+    assert.deepStrictEqual(detailGroupRows(claude, "Connection"), ["Manage hooks automatically", "Start with Claude Code", "Claude config folders"]);
     assert.deepStrictEqual(detailGroupRows(claude, "Quota"), ["Read local Claude quota and context usage"]);
 
     const codex = findAgentCard(harness.content, "Codex");
@@ -22581,5 +23045,31 @@ describe("kiro-desktop: agent settings", () => {
     assert.deepStrictEqual(JSON.parse(JSON.stringify(commands)), [["setAgentFlag", {
       agentId: "kiro-desktop", flag: "permissionsEnabled", value: false,
     }]]);
+  });
+});
+
+describe("issue #1323: theme appearance refreshes animation data", () => {
+  it("issue #1323: a themeAppearance change refetches animation overrides data", async () => {
+    let fetches = 0;
+    const settingsAPI = {
+      getAnimationOverridesData: () => {
+        fetches += 1;
+        return Promise.resolve({ theme: null, assets: [], sections: [], cards: [], sounds: [] });
+      },
+    };
+    const core = loadSettingsCoreForTest(settingsAPI, {
+      document: { body: { contains: () => false }, getElementById: () => null },
+    });
+    core.state.activeTab = "animOverrides";
+    core.state.snapshot = { theme: "night", themeAppearance: {}, themeOverrides: {} };
+    core.ops.installRenderHooks({ sidebar: () => {}, content: () => {}, modal: () => {} });
+
+    core.ops.applyChanges({
+      changes: { themeAppearance: { night: "dark" } },
+      snapshot: { ...core.state.snapshot, themeAppearance: { night: "dark" } },
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(fetches >= 1, "animation override data must be refetched");
   });
 });

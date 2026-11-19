@@ -103,6 +103,7 @@ function createSettingsEffectRouter(options = {}) {
   const exitMiniMode = options.exitMiniMode || noop;
   const getMiniMode = options.getMiniMode || (() => false);
   const getActiveTheme = options.getActiveTheme || (() => null);
+  const syncActiveThemeAppearance = options.syncActiveThemeAppearance || noop;
   const syncHitWin = options.syncHitWin || noop;
   const refreshIdleVisual = options.refreshIdleVisual || noop;
   const refreshDisplayedVisual = options.refreshDisplayedVisual || noop;
@@ -196,6 +197,11 @@ function createSettingsEffectRouter(options = {}) {
       const tintId = getPetTintIdForTheme(changes.petTint, activeTheme && activeTheme._id);
       sendToRenderer("pet-tint-change", resolvePetTintPayload(tintId, activeTheme));
     }
+    if ("themeAppearance" in changes) {
+      // Prefs are already committed here, so the runtime reads the new value
+      // itself; no appearance argument needs to be threaded through commands.
+      safeCall(logWarn, "Clawd: theme appearance sync failed:", syncActiveThemeAppearance);
+    }
     if (
       "petAccessory" in changes
       || "petMouthAccessory" in changes
@@ -218,7 +224,8 @@ function createSettingsEffectRouter(options = {}) {
     }
     // Localized display labels live in snapshots. Refresh after mirrors and
     // dictionaries, also coalescing a simultaneous alias change into one send.
-    if ("lang" in changes || "sessionAliases" in changes) {
+    // Claude profile labels come from agents["claude-code"].configDirs.
+    if ("lang" in changes || "sessionAliases" in changes || "agents" in changes) {
       safeCall(
         logWarn,
         "Clawd: session title snapshot broadcast failed:",
@@ -378,6 +385,7 @@ function createSettingsEffectRouter(options = {}) {
       // would leave the transparent window (and its auto-hide hot zone) sized
       // for coins that no longer draw.
       || "quotaRingHiddenProviders" in changes
+      || "quotaRingShownProviders" in changes
     ) {
       try {
         syncSessionHudVisibility();

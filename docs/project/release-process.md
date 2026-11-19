@@ -23,7 +23,7 @@ inside Clawd. Before tagging, refresh the bundled catalog snapshot with
 `npm run update:official-theme-snapshot` and commit the diff if the snapshot
 changed. Confirm the packaged resources still contain no
 `themes/hash-sage/**` or `themes/whale-chan/**` payload and that `npm run audit:assets` reports the
-tracked-tree budget within policy. On a pull request, the
+tracked binary/media total within policy. On a pull request, the
 `audit:pr-history-assets` gate additionally proves no large official-theme
 media entered the PR's reachable history.
 
@@ -108,7 +108,7 @@ Record platform, architecture, host version and result for each item. Items that
 
 *Windows installer, updates and hooks*
 
-1. **Windows, upgrade from v1.5.0 (#882, #1298, #1341):** on a real desktop session (the installer stalls in an SSH session), upgrade with one remaining Clawd process and with several. The installer closes them instead of showing "Clawd on Desk cannot be closed". The old v1.5.0 uninstaller still clears the agent hooks once; after the first launch of v1.6.0 every integration that was installed and enabled has its hook back and a real Claude Code session reports state. Disabled integrations are not written back. A later same-version overwrite install keeps the hooks, and a real uninstall removes only Clawd's entries.
+1. **Windows, upgrade from v1.5.0 (#882, #1298, #1341):** on a real desktop session (the installer stalls in an SSH session), upgrade with one remaining Clawd process and with several. The installer closes them instead of showing "Clawd on Desk cannot be closed". The old v1.5.0 uninstaller still clears the agent hooks once (on a computer that is also a Remote SSH host it clears the remote hooks too; back them up and restore or redeploy afterwards); after the first launch of v1.6.0 every integration that was installed and enabled has its hook back and a real Claude Code session reports state. Disabled integrations are not written back. A later same-version overwrite install keeps the hooks, and a real uninstall removes only Clawd's entries.
 2. **Windows, Claude Code hook without PowerShell (#1297):** with Claude Code 2.1.160 or later and an absolute Node `.exe` path, and a profile path that has spaces, Chinese characters or a single quote, the hook starts Node directly and Claude Code events arrive; an older Claude Code keeps the PowerShell form. A machine with Grok Build keeps the PowerShell path, a Cursor import of Claude hooks no longer reports (enable the Cursor integration instead), and macOS and Linux hook commands are unchanged.
 3. **Windows, window close and shutdown (#1340):** an external close request on either pet window (taskbar preview X, Alt+F4, a window manager) is ignored; the tray and right-click Hide and Quit, and the update "Restart Now" still close it. With Clawd running, click Restart (or sign out) once on the Windows desktop and confirm "This app is preventing shutdown" does not appear.
 4. **Windows, screenshots (#1294):** with the system snipping tool (Win+Shift+S) and "Auto-hide in fullscreen" off, the pet does not rise above the overlay, does not walk and does not hide; with it on, the pet hides as before and comes back after the capture; a third-party screenshot tool is not covered. Also run with "Keep the pet on top of other windows" on and off.
@@ -584,7 +584,7 @@ Windows x64/arm64, macOS x64/arm64, and Linux x64. The assertion scans both the
 outer resources tree and the real `app.asar`; a retired executable or runtime
 module is a hard failure.
 
-## Windows NSIS Running-App Check
+## Windows NSIS Overrides
 
 `build/installer.nsh` overrides process detection through `customCheckAppRunning`
 to fix the PowerShell 5.1 single-process count (#882 / electron-builder#10454),
@@ -592,6 +592,14 @@ preserving the rest of the electron-builder 26.15.7 flow. When upgrading
 electron-builder, `test/windows-installer-app-check.test.js` detects template
 drift and requires resynchronizing the override. Remove the override once the
 upstream fix is adopted.
+
+The include also samples deletion access to the old install directory before
+upgrades (#882), and supplies `customUnInstallCheck*` with `/SD IDOK` so silent
+upgrades exit when the old uninstaller returns a nonzero result. Insufficient
+deletion permission shows a dedicated prompt, with Cancel exiting with code 2
+and silent mode exiting directly with code 2. When upgrading
+electron-builder, recheck these overrides against `installUtil.nsh` as well;
+`test/windows-installer-permission-check.test.js` guards the result-check copies.
 
 ## WinGet Publishing
 

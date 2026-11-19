@@ -39,6 +39,84 @@ const mockResolve = () => ({
   pidChain: [],
 });
 
+describe("buildStateBody Claude profile folder (#1250)", () => {
+  const payload = { session_id: "s-profile", cwd: "/tmp/project" };
+
+  it("reports CLAUDE_CONFIG_DIR for Claude Code sessions", () => {
+    const configDir = path.join(os.tmpdir(), ".claude-work");
+    const body = buildStateBody("UserPromptSubmit", payload, mockResolve, { env: { CLAUDE_CONFIG_DIR: `${configDir}${path.sep}` } });
+    assert.strictEqual(body.agent_id, "claude-code");
+    assert.strictEqual(body.claude_config_dir, configDir);
+  });
+
+  it("sends nothing for the default folder or an unusable value", () => {
+    for (const env of [{}, { CLAUDE_CONFIG_DIR: "" }, { CLAUDE_CONFIG_DIR: "relative/dir" }]) {
+      const body = buildStateBody("UserPromptSubmit", payload, mockResolve, { env });
+      assert.strictEqual(Object.prototype.hasOwnProperty.call(body, "claude_config_dir"), false, JSON.stringify(env));
+    }
+  });
+
+  it("does not tag other agents that reuse the Claude hook", () => {
+    const body = buildStateBody("UserPromptSubmit", { ...payload, cursor_version: "1.0.0" }, mockResolve, {
+      env: { CLAUDE_CONFIG_DIR: path.join(os.tmpdir(), ".claude-work") },
+    });
+    assert.notStrictEqual(body.agent_id, "claude-code");
+    assert.strictEqual(body.claude_config_dir, undefined);
+  });
+});
+
+describe("buildStateBody Claude desktop entrypoint (issue #1365)", () => {
+  const payload = { session_id: "s-entrypoint", cwd: "/tmp/project" };
+
+  it("issue #1365: forwards a valid CLAUDE_CODE_ENTRYPOINT token", () => {
+    const body = buildStateBody("UserPromptSubmit", payload, mockResolve, {
+      env: { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" },
+    });
+    assert.strictEqual(body.agent_id, "claude-code");
+    assert.strictEqual(body.claude_entrypoint, "claude-desktop");
+  });
+
+  it("issue #1365: trims surrounding whitespace before forwarding", () => {
+    const body = buildStateBody("UserPromptSubmit", payload, mockResolve, {
+      env: { CLAUDE_CODE_ENTRYPOINT: "  claude-desktop\t" },
+    });
+    assert.strictEqual(body.claude_entrypoint, "claude-desktop");
+  });
+
+  it("issue #1365: drops missing or malformed values instead of guessing", () => {
+    for (const env of [
+      {},
+      { CLAUDE_CODE_ENTRYPOINT: "" },
+      { CLAUDE_CODE_ENTRYPOINT: "   " },
+      { CLAUDE_CODE_ENTRYPOINT: "a".repeat(65) },
+      { CLAUDE_CODE_ENTRYPOINT: "claude desktop" },
+      { CLAUDE_CODE_ENTRYPOINT: "claude\tdesktop" },
+      { CLAUDE_CODE_ENTRYPOINT: 42 },
+    ]) {
+      const body = buildStateBody("UserPromptSubmit", payload, mockResolve, { env });
+      assert.strictEqual(Object.prototype.hasOwnProperty.call(body, "claude_entrypoint"), false, JSON.stringify(env));
+    }
+  });
+
+  it("issue #1365: does not tag the Cursor compatibility path", () => {
+    const body = buildStateBody("UserPromptSubmit", { ...payload, cursor_version: "1.0.0" }, mockResolve, {
+      env: { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" },
+    });
+    assert.notStrictEqual(body.agent_id, "claude-code");
+    assert.strictEqual(body.claude_entrypoint, undefined);
+  });
+
+  it("issue #1365: does not add the field to the minimal PostToolBatch body", () => {
+    const body = buildStateBody("PostToolBatch", {
+      session_id: "batch-entrypoint",
+      prompt_id: "prompt-1",
+      tool_calls: [{ tool_use_id: "tool-1" }],
+    }, mockResolve, { env: { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" } });
+    assert.strictEqual(body.event, "PostToolBatch");
+    assert.strictEqual(body.claude_entrypoint, undefined);
+  });
+});
+
 describe("buildStateBody", () => {
   it("reports a parent tool batch as a minimal phase event without tool content or process probing", () => {
     const body = buildStateBody("PostToolBatch", {

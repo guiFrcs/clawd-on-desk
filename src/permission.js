@@ -15,6 +15,7 @@ const {
 const { MAC_TOPMOST_LEVEL } = require("./topmost-runtime");
 const { redactSecrets } = require("./secret-redact");
 const path = require("path");
+const { claudeProfileLabelFor } = require("../hooks/claude-config-dirs");
 const http = require("http");
 const crypto = require("crypto");
 const {
@@ -802,8 +803,11 @@ function buildPermissionFocusEntry(perm) {
   if (perm.codexSource) focusEntry.codexSource = perm.codexSource;
   if (typeof perm.codexClientEphemeral === "boolean") focusEntry.codexClientEphemeral = perm.codexClientEphemeral;
   // An approval can arrive before the session lifecycle event, so the fallback
-  // entry needs the carrier to remain jumpable to the desktop app window.
-  if (perm.dshCarrier) focusEntry.dshCarrier = perm.dshCarrier;
+  // entry needs the carrier and raw id to raise the app and select the session.
+  if (perm.dshCarrier) {
+    focusEntry.dshCarrier = perm.dshCarrier;
+    if (perm.rawSessionId) focusEntry.rawSessionId = perm.rawSessionId;
+  }
   return focusEntry;
 }
 
@@ -3228,6 +3232,10 @@ function buildPermissionBubblePayload(permEntry) {
   ensureBubblePresentationState(permEntry);
   const sess = ctx.sessions.get(permEntry.sessionId);
   const sessionFolder = sess && sess.cwd ? path.basename(sess.cwd) : null;
+  const sessionProfileLabel = sess && sess.agentId === "claude-code" && !sess.host && !sess.wslDistro
+    && typeof ctx.getClaudeConfigDirs === "function"
+    ? claudeProfileLabelFor(sess.claudeConfigDir || null, ctx.getClaudeConfigDirs())
+    : "";
   const sessionShortId = permEntry.sessionId
     ? String(permEntry.sessionId).slice(-3)
     : null;
@@ -3325,6 +3333,7 @@ function buildPermissionBubblePayload(permEntry) {
     familyAlways: permEntry.familyAlwaysCandidates || [],
     familyPatterns: permEntry.familyPatterns || [],
     sessionFolder,
+    sessionProfileLabel: sessionProfileLabel || null,
     sessionShortId,
   };
 }

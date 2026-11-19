@@ -3,6 +3,7 @@ const { isLocalApprovalReminderSession, isTerminalWaitSession } = require("./app
 const { hasSubagentHoldEvidence } = require("./subagent-lifecycle");
 
 const crypto = require("crypto");
+const { claudeProfileLabelFor } = require("../hooks/claude-config-dirs");
 const path = require("path");
 const { i18n } = require("./i18n");
 const { isCodexDesktopOriginator } = require("../hooks/codex-originator");
@@ -360,7 +361,10 @@ function sessionUpdatedAtComparator(a, b) {
 //   - Kimi Code desktop restores the last viewed conversation on launch, and
 //     opening an old conversation from the sidebar does the same; both only
 //     send a SessionStart.
-const AWAITING_ACTIVITY_AGENTS = new Set(["deepseek-harness", "kimi-cli"]);
+//   - Copilot (the CLI, or the runtime inside VS Code) sends a sessionStart
+//     when a conversation is opened or restored; the row stays out of the HUD
+//     until the user acts.
+const AWAITING_ACTIVITY_AGENTS = new Set(["deepseek-harness", "kimi-cli", "copilot-cli"]);
 
 function isSessionAwaitingActivity(session) {
   return !!session
@@ -407,6 +411,14 @@ function shouldHideActiveCodexEphemeral(id, session, options = {}) {
   return shouldHideCodexEphemeralFromHud(id, session, deriveSessionBadge(session), {
     ...options, sessionHudHideCompletedCodexEphemeral: false,
   });
+}
+
+// "work" / "personal" chip for local Claude sessions when Clawd manages more
+// than one Claude config folder. Remote and WSL sessions report folders on
+// another machine, which the local list cannot name.
+function deriveSessionClaudeProfileLabel(session, claudeConfigDirs) {
+  if (!session || session.agentId !== "claude-code" || session.host || session.wslDistro) return "";
+  return claudeProfileLabelFor(session.claudeConfigDir || null, claudeConfigDirs);
 }
 
 function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {}) {
@@ -459,8 +471,11 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     || isSupersededLocalCodexProcessSession(id, session, options.latestLocalCodexProcessIds);
   // Positive delegated-work / pending-attention facts keep the parent visible,
   // but do not prove a focus target or change the shared process dedupe policy.
+  // An untouched conversation is idle by definition; once it shows activity or a
+  // pending question (whose effective state is "notification"), keep it in the HUD.
+  const hideAwaitingActivity = isSessionAwaitingActivity(session) && effectiveState === "idle";
   const hiddenFromHud = (hiddenByExistingReason && activeSubagentCount === 0 && !pendingAttention)
-    || isSessionAwaitingActivity(session);
+    || hideAwaitingActivity;
   const hudHiddenByPreference = shouldHideCodexEphemeralFromHud(id, session, badge, options);
   const startupRecovered = !!(session && session.startupRecovered === true);
   const focusTarget = session && !session.headless && !startupRecovered && state !== "sleeping" && !hiddenByExistingReason
@@ -515,6 +530,8 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     focusTarget: focusTarget.type ? { type: focusTarget.type, url: focusTarget.url || null } : null,
     host: (session && session.host) || null,
     wslDistro: (session && session.wslDistro) || null,
+    claudeConfigDir: (session && session.claudeConfigDir) || null,
+    claudeProfileLabel: deriveSessionClaudeProfileLabel(session, options.claudeConfigDirs),
     sourceType: source.sourceType,
     sourceLabel: source.sourceLabel,
     sourceDisplayLabel: source.displayLabel,
@@ -677,6 +694,7 @@ function buildSessionSnapshot(sessions, options = {}) {
         claudeQuota: iconFor("claude-code"),
         codexQuota: iconFor("codex"),
         kimiQuota: iconFor("kimi-cli"),
+        deepseekQuota: iconFor("deepseek-harness"),
       };
     })(),
     sessionAutomationOrphans: automationRecords
@@ -738,6 +756,9 @@ function sessionSnapshotSignature(snapshot) {
       codexSparkQuota: entry.codexSparkQuota
         ? { group: entry.codexSparkQuota.group, lastSeenAt: entry.codexSparkQuota.lastSeenAt }
         : null,
+      deepseekQuota: entry.deepseekQuota
+        ? { group: entry.deepseekQuota.group, lastSeenAt: entry.deepseekQuota.lastSeenAt }
+        : null,
       kimiQuota: entry.kimiQuota
         ? { group: entry.kimiQuota.group, lastSeenAt: entry.kimiQuota.lastSeenAt }
         : null,
@@ -770,6 +791,8 @@ function sessionSnapshotSignature(snapshot) {
       hudHiddenByPreference: !!entry.hudHiddenByPreference,
       host: entry.host,
       wslDistro: entry.wslDistro,
+      claudeConfigDir: entry.claudeConfigDir,
+      claudeProfileLabel: entry.claudeProfileLabel,
       platform: entry.platform,
       model: entry.model,
       provider: entry.provider,

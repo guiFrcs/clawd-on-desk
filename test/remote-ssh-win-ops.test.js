@@ -777,14 +777,84 @@ test("issue #1316: native installer timeout remains an unknown mutation result",
 });
 test("issue #1316: Windows permission readback distinguishes native and the exact identity nonce", async (t) => {
   const f = fixture(t); await f.run("acquireLock", { owner: f.owner }); f.put(f.layout.identityFile, f.identity);
+  f.put(path.win32.join(f.layout.claudeHooksDir, "server-config.js"), fs.readFileSync(path.join(__dirname, "..", "hooks", "server-config.js"), "utf8"));
+  f.deps.require = (target) => require(f.local(target));
   await assert.rejects(f.run("readClaudePermission", { owner: f.owner }), { reason: "installer_config_invalid" });
   f.put(f.layout.claudeSettingsFile, { hooks: {} });
   assert.deepEqual(await f.run("readClaudePermission", { owner: f.owner }), { ok: true, mode: "native" });
   for (const url of [`http://127.0.0.1:23333/permission/${f.identity.routingNonce}`, `http://127.0.0.1:23333/permission?nonce=${f.identity.routingNonce}`]) {
-    f.put(f.layout.claudeSettingsFile, { hooks: { PermissionRequest: [{ hooks: [{ url }] }] } });
+    f.put(f.layout.claudeSettingsFile, { hooks: { PermissionRequest: [{ hooks: [{ type: "http", url }] }] } });
     assert.deepEqual(await f.run("readClaudePermission", { owner: f.owner }), { ok: true, mode: "managed" });
   }
-  f.put(f.layout.claudeSettingsFile, { hooks: { PermissionRequest: [{ url: "http://127.0.0.1:23333/permission?nonce=foreign" }] } });
+  f.put(f.layout.claudeSettingsFile, { hooks: { PermissionRequest: [{ type: "http", url: `http://127.0.0.1:23333/permission?nonce=${"d".repeat(32)}` }] } });
+  await assert.rejects(f.run("readClaudePermission", { owner: f.owner }), { reason: "permission_nonce_mismatch" });
+});
+
+async function windowsPermissionFixture(t) {
+  const f = fixture(t);
+  await f.run("acquireLock", { owner: f.owner });
+  f.put(f.layout.identityFile, f.identity);
+  f.put(path.win32.join(f.layout.claudeHooksDir, "server-config.js"), fs.readFileSync(path.join(__dirname, "..", "hooks", "server-config.js"), "utf8"));
+  f.deps.require = (target) => require(f.local(target));
+  return f;
+}
+function permissionRequest(entries) {
+  return { hooks: { PermissionRequest: entries } };
+}
+function managedHook(f, { transport = "path", nonce = f.identity.routingNonce } = {}) {
+  return transport === "query"
+    ? { type: "http", url: `http://127.0.0.1:23333/permission?nonce=${nonce}` }
+    : { type: "http", url: `http://127.0.0.1:23333/permission/${nonce}` };
+}
+const foreignPermissionHook = { type: "http", url: "http://127.0.0.1:8080/approve" };
+
+test("remote SSH permission readback: Windows selects Clawd's hook ahead of a foreign loopback hook", async (t) => {
+  const f = await windowsPermissionFixture(t);
+  f.put(f.layout.claudeSettingsFile, permissionRequest([foreignPermissionHook, managedHook(f)]));
+  assert.deepEqual(await f.run("readClaudePermission", { owner: f.owner }), { ok: true, mode: "managed" });
+});
+test("remote SSH permission readback: Windows selects Clawd's hook before a foreign loopback hook", async (t) => {
+  const f = await windowsPermissionFixture(t);
+  f.put(f.layout.claudeSettingsFile, permissionRequest([{ hooks: [managedHook(f, { transport: "query" })] }, { hooks: [foreignPermissionHook] }]));
+  assert.deepEqual(await f.run("readClaudePermission", { owner: f.owner }), { ok: true, mode: "managed" });
+});
+test("remote SSH permission readback: Windows reports native when only a foreign loopback hook exists", async (t) => {
+  const f = await windowsPermissionFixture(t);
+  f.put(f.layout.claudeSettingsFile, permissionRequest([foreignPermissionHook]));
+  assert.deepEqual(await f.run("readClaudePermission", { owner: f.owner }), { ok: true, mode: "native" });
+});
+test("remote SSH permission readback: Windows keeps the nonce check when a foreign hook comes first", async (t) => {
+  const f = await windowsPermissionFixture(t);
+  f.put(f.layout.claudeSettingsFile, permissionRequest([foreignPermissionHook, managedHook(f, { nonce: "d".repeat(32) })]));
+  await assert.rejects(f.run("readClaudePermission", { owner: f.owner }), { reason: "permission_nonce_mismatch" });
+});
+test("remote SSH permission readback: Windows ignores a command entry with a Clawd-shaped url", async (t) => {
+  const f = await windowsPermissionFixture(t);
+  f.put(f.layout.claudeSettingsFile, permissionRequest([
+    { type: "command", command: "approve-tool", url: `http://127.0.0.1:23333/permission/${"d".repeat(32)}` },
+    managedHook(f),
+  ]));
+  assert.deepEqual(await f.run("readClaudePermission", { owner: f.owner }), { ok: true, mode: "managed" });
+});
+test("remote SSH permission readback: Windows fails closed when server-config.js is missing", async (t) => {
+  const f = fixture(t);
+  await f.run("acquireLock", { owner: f.owner });
+  f.put(f.layout.identityFile, f.identity);
+  f.put(f.layout.claudeSettingsFile, permissionRequest([managedHook(f)]));
+  await assert.rejects(f.run("readClaudePermission", { owner: f.owner }), { reason: "installer_verification_failed" });
+});
+test("remote SSH permission readback: Windows fails closed when server-config.js lacks the ownership export", async (t) => {
+  const f = fixture(t);
+  await f.run("acquireLock", { owner: f.owner });
+  f.put(f.layout.identityFile, f.identity);
+  f.put(path.win32.join(f.layout.claudeHooksDir, "server-config.js"), "module.exports = {};");
+  f.deps.require = (target) => require(f.local(target));
+  f.put(f.layout.claudeSettingsFile, permissionRequest([]));
+  await assert.rejects(f.run("readClaudePermission", { owner: f.owner }), { reason: "installer_verification_failed" });
+});
+test("remote SSH permission readback: Windows treats a legacy nonce-less Clawd URL as a mismatch", async (t) => {
+  const f = await windowsPermissionFixture(t);
+  f.put(f.layout.claudeSettingsFile, permissionRequest([{ type: "http", url: "http://127.0.0.1:23333/permission/clawd-on-desk" }]));
   await assert.rejects(f.run("readClaudePermission", { owner: f.owner }), { reason: "permission_nonce_mismatch" });
 });
 test("issue #1316: Windows retirement is idempotent and rejects an orphan marker or foreign identity", async (t) => {
@@ -1098,6 +1168,62 @@ test("DSH remote: cleanup preflight inspects every managed asset, not just the i
   assert.equal(result.installerLoadFailed, false);
 });
 
+// Captures the PowerShell that preflight actually sends, decoded from -EncodedCommand.
+async function remoteDshDiscoveryScript(t) {
+  const f = fixture(t);
+  delete f.deps.dshDesktopDiscovery;
+  const calls = [];
+  f.deps.spawnSync = (_executable, argv) => {
+    calls.push(argv);
+    return { status: 0, stdout: JSON.stringify({ uninstall: [], commandDirectory: null }), stderr: "" };
+  };
+  await f.run("preflight");
+  assert.equal(calls.length, 1);
+  const argv = calls[0];
+  const encodedIndex = argv.indexOf("-EncodedCommand");
+  assert.notEqual(encodedIndex, -1);
+  return Buffer.from(argv[encodedIndex + 1], "base64").toString("utf16le");
+}
+
+// Returns the one line of a discovery script that filters uninstall entries by display name.
+function displayNameCondition(script) {
+  const lines = script.split(/\r?\n/).filter((line) => line.includes(".DisplayName -is [string]"));
+  assert.equal(lines.length, 1, "discovery script must contain exactly one display-name condition");
+  return lines[0].trimStart();
+}
+
+test("DSH remote: discovery accepts the same uninstall display names as local discovery", async (t) => {
+  const localScript = require("../hooks/dsh-install").__test.DSH_WINDOWS_REGISTRY_SCRIPT;
+  assert.equal(displayNameCondition(await remoteDshDiscoveryScript(t)), displayNameCondition(localScript));
+});
+
+test("DSH remote: Windows PowerShell accepts bare and versioned DSH names and rejects look-alikes", {
+  skip: process.platform !== "win32" && "needs Windows PowerShell",
+}, async (t) => {
+  const { spawnSync } = require("node:child_process");
+  const localScript = require("../hooks/dsh-install").__test.DSH_WINDOWS_REGISTRY_SCRIPT;
+  const remoteScript = await remoteDshDiscoveryScript(t);
+  const powershell = path.win32.join(process.env.SystemRoot || process.env.SYSTEMROOT || "C:\\Windows",
+    "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  for (const [name, script] of [["local", localScript], ["remote", remoteScript]]) {
+    // Execute the production condition so the test cannot drift from discovery.
+    const probe = [
+      "$ErrorActionPreference = 'Stop'",
+      "foreach ($name in @('DeepSeek Harness', 'DeepSeek Harness 0.2.1-rc.5', 'DeepSeek HarnessX', 'Other App', $null, 42)) {",
+      "  $props = [pscustomobject]@{ DisplayName = $name }",
+      `  ${displayNameCondition(script)} '1' } else { '0' }`,
+      "}",
+    ].join("\n");
+    const result = spawnSync(powershell, [
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+      "-EncodedCommand", Buffer.from(probe, "utf16le").toString("base64"),
+    ], { encoding: "utf8", timeout: 30000, windowsHide: true });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, `${name}: ${result.stderr}`);
+    assert.deepEqual(result.stdout.trim().split(/\s+/), ["1", "1", "0", "0", "0", "0"], name);
+  }
+});
+
 test("DSH remote: preflight discovery classifies case variants, commandDirectory and unreadable roots", async (t) => {
   const f = fixture(t);
   delete f.deps.dshDesktopDiscovery;
@@ -1109,8 +1235,18 @@ test("DSH remote: preflight discovery classifies case variants, commandDirectory
   f.deps.spawnSync = respond({ uninstall: [{ installLocation: appRoot, guidInstallLocation: null }, { installLocation: appRoot.toUpperCase(), guidInstallLocation: null }], commandDirectory: null });
   assert.equal((await f.run("preflight")).dsh.status, "present");
 
-  f.deps.spawnSync = respond({ uninstall: [], commandDirectory: appRoot });
-  assert.equal((await f.run("preflight")).dsh.status, "present");
+  f.deps.spawnSync = respond({ uninstall: [], commandDirectory: path.win32.join(appRoot, "resources", "runtime", "cli", "bin") });
+  const discovery = (await f.run("preflight")).dsh;
+  assert.equal(discovery.status, "present");
+  assert.equal(discovery.appRoot, appRoot);
+
+  f.deps.spawnSync = respond({
+    uninstall: [{ installLocation: appRoot + "\\", guidInstallLocation: null }],
+    commandDirectory: path.win32.join(appRoot, "resources", "runtime", "cli", "bin"),
+  });
+  const deduplicated = (await f.run("preflight")).dsh;
+  assert.equal(deduplicated.status, "present");
+  assert.equal(deduplicated.appRoot, appRoot);
 
   f.faults.statSync = (target) => { if (String(target).toLowerCase().includes("deepseek harness.exe")) throw error("EACCES"); };
   f.deps.spawnSync = respond({ uninstall: [{ installLocation: appRoot, guidInstallLocation: null }], commandDirectory: null });

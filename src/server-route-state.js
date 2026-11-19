@@ -48,6 +48,30 @@ const {
 const { resolveCodexOfficialHookState } = require("./server-codex-official-turns");
 const { normalizeClaudePhaseId, normalizeClaudeBatchToolUseIds } = require("../hooks/claude-tool-batch");
 const { normalizeTranscriptPath } = require("./transcript-path");
+const { normalizeClaudeConfigDir } = require("../hooks/claude-config-dirs");
+
+// CLAUDE_CONFIG_DIR as the Claude hook saw it. Remote and WSL hosts report
+// their own paths, so accept either path flavour; it is only used as a label.
+function normalizeReportedClaudeConfigDir(value) {
+  return normalizeClaudeConfigDir(value, { platform: "linux" })
+    || normalizeClaudeConfigDir(value, { platform: "win32" });
+}
+
+// Mirrors hooks/clawd-hook.js normalizeClaudeEntrypoint: both ends accept only
+// a short opaque token, so a malformed value is dropped instead of stored.
+// Keep the allowlist and length in sync with the hook side.
+const CLAUDE_ENTRYPOINT_MAX_LENGTH = 64;
+const CLAUDE_ENTRYPOINT_RE = /^[A-Za-z0-9._-]+$/;
+
+function normalizeClaudeEntrypoint(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > CLAUDE_ENTRYPOINT_MAX_LENGTH || !CLAUDE_ENTRYPOINT_RE.test(trimmed)) {
+    return null;
+  }
+  return trimmed;
+}
+
 const { normalizeQuotaGroup } = require("../hooks/quota-bucket");
 const { ANTIGRAVITY_QUOTA_FIELDS } = require("../hooks/antigravity-context-usage");
 const { CLAUDE_QUOTA_FIELDS } = require("../hooks/claude-rate-limits");
@@ -390,6 +414,8 @@ function handleStatePost(req, res, options) {
       const wslDistro = typeof data.wsl_distro === "string" && data.wsl_distro.trim()
         ? data.wsl_distro.trim()
         : null;
+      const claudeConfigDir = normalizeReportedClaudeConfigDir(data.claude_config_dir);
+      const claudeEntrypoint = normalizeClaudeEntrypoint(data.claude_entrypoint);
       const headless = data.headless === true;
       const platform = typeof data.platform === "string" && data.platform.trim()
         ? data.platform.trim()
@@ -482,6 +508,8 @@ function handleStatePost(req, res, options) {
       const sessionTitleFromPrompt =
         sessionTitle !== null && data.session_title_from_prompt === true;
       const contextUsage = normalizeContextUsage(data.context_usage);
+      // DeepSeek balance is owned by the local API-key runtime. Deliberately
+      // exclude deepseek_quota/deepseekQuota from HTTP ingress, even on localhost.
       const antigravityQuota = normalizeAntigravityQuota(data.antigravity_quota);
       const claudeQuota = normalizeClaudeQuota(data.claude_quota);
       const codexQuota = normalizeCodexQuota(data.codex_quota);
@@ -1219,6 +1247,8 @@ function handleStatePost(req, res, options) {
             rawSessionId: rawStateSessionId,
             host,
             wslDistro,
+            ...(agentId === "claude-code" && claudeConfigDir ? { claudeConfigDir } : {}),
+            ...(agentId === "claude-code" && claudeEntrypoint ? { claudeEntrypoint } : {}),
             headless: headless || codexHookState.headless === true,
             platform,
             model,

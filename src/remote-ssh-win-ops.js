@@ -380,12 +380,12 @@ async function windowsOperation(args, deps = {}) {
       "  $entries = @()",
       "  if (Test-Path -LiteralPath $root) {",
       "    foreach ($key in Get-ChildItem -LiteralPath $root) {",
-      "      $p = Get-ItemProperty -LiteralPath $key.PSPath",
-      "      if ($p.DisplayName -is [string] -and $p.DisplayName.StartsWith('DeepSeek Harness ')) {",
+      "      $props = Get-ItemProperty -LiteralPath $key.PSPath",
+      "      if ($props.DisplayName -is [string] -and ($props.DisplayName -eq 'DeepSeek Harness' -or $props.DisplayName.StartsWith('DeepSeek Harness '))) {",
       "        $g = 'HKCU:\\Software\\' + $key.PSChildName",
       "        $gi = $null",
       "        if (Test-Path -LiteralPath $g) { $gi = (Get-ItemProperty -LiteralPath $g).InstallLocation }",
-      "        $entries += [pscustomobject]@{ installLocation = $p.InstallLocation; guidInstallLocation = $gi }",
+      "        $entries += [pscustomobject]@{ installLocation = $props.InstallLocation; guidInstallLocation = $gi }",
       "      }",
       "    }",
       "  }",
@@ -411,8 +411,9 @@ async function windowsOperation(args, deps = {}) {
     function addRoot(candidate) {
       if (typeof candidate !== "string" || !candidate) return;
       const normalized = pathApi.normalize(candidate);
-      const key = normalized.toLowerCase();
-      if (!roots.has(key)) roots.set(key, normalized);
+      const stripped = normalized.length > 3 ? normalized.replace(/[\\/]+$/, "") : normalized;
+      const key = stripped.toLowerCase();
+      if (!roots.has(key)) roots.set(key, stripped);
     }
     if (parsed && Array.isArray(parsed.uninstall)) {
       for (const entry of parsed.uninstall) {
@@ -420,7 +421,10 @@ async function windowsOperation(args, deps = {}) {
         addRoot(entry.guidInstallLocation);
       }
     }
-    if (parsed) addRoot(parsed.commandDirectory);
+    if (parsed && typeof parsed.commandDirectory === "string" && parsed.commandDirectory.trim()) {
+      // Directory points to resources/runtime/cli/bin, four levels below the app root.
+      addRoot(pathApi.resolve(parsed.commandDirectory.trim(), "..", "..", "..", ".."));
+    }
     const registryRootCount = roots.size;
     let unreadable = false;
     let defaultLocationExists = false;
@@ -592,12 +596,27 @@ async function windowsOperation(args, deps = {}) {
     }
     return { ok: true, removed, conflicts: 0, changed, ...(hasUninstaller ? {} : { skipped: true }) };
   } else if (operation === "readClaudePermission") {
+    // Use the installer's ownership test instead of "the first URL containing
+    // 127.0.0.1:". A third-party tool can also host its approval hook on
+    // loopback and list it before Clawd's entry; a substring check would then
+    // read back that foreign hook and fail the nonce comparison.
+    const serverConfigPath = safePath(p.join(layout.claudeHooksDir, "server-config.js"));
+    let serverConfig;
+    try {
+      serverConfig = (deps.require || require)(serverConfigPath);
+    } catch (err) {
+      refuse("installer_verification_failed", serverConfigPath, (err && (err.code || err.message)) || "load failed");
+    }
+    if (!serverConfig || typeof serverConfig.isManagedPermissionUrl !== "function") {
+      refuse("installer_verification_failed", serverConfigPath, "missing isManagedPermissionUrl export");
+    }
     const settings = readJson(layout.claudeSettingsFile, "installer_config_invalid", true);
     if (!settings) refuse("installer_config_invalid", layout.claudeSettingsFile);
     const identity = readIdentity();
     if (!identity) refuse("ownership_unverified", layout.identityFile);
     const ours = flatten(settings && settings.hooks && settings.hooks.PermissionRequest)
-      .find((hook) => hook && typeof hook.url === "string" && hook.url.includes("127.0.0.1:"));
+      .find((hook) => hook && hook.type === "http" && typeof hook.url === "string"
+        && serverConfig.isManagedPermissionUrl(hook.url));
     if (!ours) return { ok: true, mode: "native" };
     const url = new URL(ours.url);
     const nonce = url.pathname === "/permission" ? url.searchParams.get("nonce") : url.pathname.split("/").pop();

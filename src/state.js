@@ -240,6 +240,9 @@ if (ctx.claudeQuotaCollectionEnabled === false) {
 if (ctx.kimiQuotaCollectionEnabled === false) {
   clearLocalKimiQuota({ broadcast: false });
 }
+if (ctx.deepseekBalanceCollectionEnabled === false) {
+  clearLocalDeepseekQuota({ broadcast: false });
+}
 const MAX_SESSIONS = 20;
 const ASSISTANT_OUTPUT_MAX = 2400;
 const CODEX_EXIT_PROBE_DELAYS_MS = [1000, 3000, 8000, 15000];
@@ -486,6 +489,11 @@ function hasConfirmedPermissionAnimationLock() {
 // from a different terminal lands back on the same entry — which is why the
 // identity check below exists rather than a longer list of event names.
 const SESSION_START_EVENTS = new Set(["SessionStart", "sessionStart", "agentSpawn"]);
+
+// Copilot reports its raw "sessionEnd"; other agents report "SessionEnd". The
+// state machine treats both spellings as end events. A main-session end usually
+// deletes the row; subagent-scoped ends and replyable Codex sessions keep theirs.
+const SESSION_END_EVENTS = new Set(["SessionEnd", "sessionEnd"]);
 
 // A pane key names one specific Orca pane, and focus consults it before the
 // sourcePid/wtHwnd that would otherwise be authoritative. So an event reporting a
@@ -1299,6 +1307,7 @@ function buildSessionSnapshot() {
     }),
     t: ctx.t,
     sessionAliases: getSessionAliases(),
+    claudeConfigDirs: typeof ctx.getClaudeConfigDirs === "function" ? ctx.getClaudeConfigDirs() : [],
     getAgentIconUrl,
     resolveAgentDisplayName: ctx.resolveAgentDisplayName,
     statePriority: STATE_PRIORITY,
@@ -1983,6 +1992,21 @@ function clearLocalKimiQuota(options = {}) {
   return { cleared: cleared > 0, persisted };
 }
 
+function commitLocalDeepseekQuota(deepseekQuota) {
+  const result = accountQuota.updateDetailed(null, { deepseekQuota });
+  if (!result.accepted) return { accepted: false, persisted: false };
+  const persisted = accountQuota.flush();
+  if (result.changed) emitSessionSnapshot();
+  return { accepted: true, persisted: persisted === true };
+}
+
+function clearLocalDeepseekQuota(options = {}) {
+  const cleared = accountQuota.clearProvider("deepseekQuota", (sourceKey) => sourceKey === "");
+  const persisted = cleared ? accountQuota.flush() === true : true;
+  if (cleared && options.broadcast !== false) emitSessionSnapshot();
+  return { cleared: cleared > 0, persisted };
+}
+
 // Distinct reporting sources that currently carry quota (this machine + WSL /
 // SSH remotes), UNmerged. The settings UI hides the "merge across machines"
 // switch when there is only one source, since merging is then a no-op.
@@ -2417,6 +2441,8 @@ function updateSession(sessionId, state, event, opts = {}) {
     rawSessionId = null,
     host = null,
     wslDistro = null,
+    claudeConfigDir = null,
+    claudeEntrypoint = null,
     headless = false,
     platform = null,
     model = null,
@@ -2470,10 +2496,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     recapSuppressed = false,
     replaceProcessMetadata = false,
   } = opts;
-  if (startupRecoveryActive) {
-    startupRecoveryActive = false;
-    if (startupRecoveryTimer) { clearTimeout(startupRecoveryTimer); startupRecoveryTimer = null; }
-  }
+  endStartupRecovery();
 
   // #406: forward progress cancels a pending debounced completion. Runs before
   // the PermissionRequest early-return so a permission prompt cancels too.
@@ -2594,6 +2617,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       const srcAgentId = resolveIncomingAgentId(existing, agentId, agentIdDefaulted);
       const srcHost = host || (existing && existing.host) || null;
       const srcWslDistro = wslDistro || (existing && existing.wslDistro) || null;
+      const srcClaudeConfigDir = claudeConfigDir || (existing && existing.claudeConfigDir) || null;
       const srcHeadless = headless || (existing && existing.headless) || false;
       const srcPlatform = platform || (existing && existing.platform) || null;
       const srcModel = model || (existing && existing.model) || null;
@@ -2644,6 +2668,7 @@ function updateSession(sessionId, state, event, opts = {}) {
           || null,
         host: srcHost,
         wslDistro: srcWslDistro,
+        claudeConfigDir: srcClaudeConfigDir,
         headless: srcHeadless,
         platform: srcPlatform,
         model: srcModel,
@@ -2748,6 +2773,8 @@ function updateSession(sessionId, state, event, opts = {}) {
     || null;
   const srcHost = host || (existing && existing.host) || null;
   const srcWslDistro = wslDistro || (existing && existing.wslDistro) || null;
+  const srcClaudeConfigDir = claudeConfigDir || (existing && existing.claudeConfigDir) || null;
+  const srcClaudeEntrypoint = claudeEntrypoint || (existing && existing.claudeEntrypoint) || null;
   const srcHeadless = headless || (existing && existing.headless) || false;
   const srcPlatform = platform || (existing && existing.platform) || null;
   if (observeCodexCompaction(sessionId, state, event, srcAgentId, srcHeadless, opts) === false) return false;
@@ -2834,7 +2861,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const isSubagentStart = event === "SubagentStart" || event === "subagentStart";
   const isSubagentStop = event === "SubagentStop" || event === "subagentStop";
   const normalizedSubagentId = normalizeChildId(subagentId);
-  const isSubagentScopedSessionEnd = event === "SessionEnd" && !!normalizedSubagentId;
+  const isSubagentScopedSessionEnd = SESSION_END_EVENTS.has(event) && !!normalizedSubagentId;
   const isSyntheticSubagentStart = !!(
     isSubagentStart
     && (
@@ -3090,7 +3117,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     // Native + synthetic double delivery observes the same population. Any
     // child close is also the bounded legacy lane's first-stop release.
     subagentTracker.legacyFloor = false;
-  } else if (normalizedSubagentId && event !== "SessionEnd") {
+  } else if (normalizedSubagentId && !SESSION_END_EVENTS.has(event)) {
     // SubagentStop can be vetoed by another hook. Any later activity from the
     // same child is positive liveness evidence and self-corrects the removal.
     subagentTracker.confirmedIds.add(normalizedSubagentId);
@@ -3126,13 +3153,18 @@ function updateSession(sessionId, state, event, opts = {}) {
     opencodeAttachUrl === undefined && existing && existing.opencodeAttachSource === attachSource
       ? existing.opencodeAttachUrl : opencodeAttachUrl
   ) : null;
-  const base = { opencodeAttachUrl: attachUrl, opencodeAttachSource: attachSource, sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, orcaPaneKey: srcOrcaPaneKey, herdrPaneId: srcHerdr.herdrPaneId, herdrSocket: srcHerdr.herdrSocket, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, sessionAutomationIdentity: srcSessionAutomationIdentity, host: srcHost, wslDistro: srcWslDistro, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, codexClientEphemeral: mergeCodexClientEphemeral(existing, opts), dshCarrier: srcDshCarrier, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, sessionTitleFromPrompt: srcSessionTitleFromPrompt, contextUsage: srcContextUsage, contextUsageOrigin: srcContextUsageOrigin, planProgress: srcPlanProgress, planProgressSource: srcPlanProgressSource, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true, claudeBackgroundSubagentHoldAt };
-  // Desktop apps can reopen a previous conversation on launch, so SessionStart
-  // only means "opened" — not "used". Any other lifecycle event is a real action
-  // and clears the marker. Only the listed agents carry the field; others are
+  const base = { opencodeAttachUrl: attachUrl, opencodeAttachSource: attachSource, sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, orcaPaneKey: srcOrcaPaneKey, herdrPaneId: srcHerdr.herdrPaneId, herdrSocket: srcHerdr.herdrSocket, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, sessionAutomationIdentity: srcSessionAutomationIdentity, host: srcHost, wslDistro: srcWslDistro, claudeConfigDir: srcClaudeConfigDir, claudeEntrypoint: srcClaudeEntrypoint, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, codexClientEphemeral: mergeCodexClientEphemeral(existing, opts), dshCarrier: srcDshCarrier, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, sessionTitleFromPrompt: srcSessionTitleFromPrompt, contextUsage: srcContextUsage, contextUsageOrigin: srcContextUsageOrigin, planProgress: srcPlanProgress, planProgressSource: srcPlanProgressSource, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true, claudeBackgroundSubagentHoldAt };
+  // Desktop apps can reopen a previous conversation on launch, so a start event
+  // (see SESSION_START_EVENTS — "SessionStart", Copilot's raw "sessionStart",
+  // Kiro's "agentSpawn") only means "opened" — not "used". A repeated start does
+  // not mark the row while the same agent still has a live approval for it, since
+  // the user is looking at a decision, not an untouched conversation. Any other
+  // event clears the marker; a main-session end deletes the row before this value
+  // would be written back. Only the listed agents carry the field; others are
   // untouched.
   if (AWAITING_ACTIVITY_AGENTS.has(srcAgentId)) {
-    base.awaitingActivity = event === "SessionStart";
+    base.awaitingActivity = SESSION_START_EVENTS.has(event)
+      && !hasLivePendingPermissionForSession(sessionId, srcAgentId);
   }
   if (preserveCompletionAck) base.requiresCompletionAck = true;
   // #862: every branch below rebuilds the session object from `base`; carry the
@@ -3145,8 +3177,10 @@ function updateSession(sessionId, state, event, opts = {}) {
     else if (typedSubagentHoldActive) preservedState = "working";
   }
 
-  // Evict oldest session if at capacity and this is a new session.
-  evictOldestSessionIfNeeded(sessionId);
+  // Evict the oldest session if at capacity and this is a new session. End
+  // events never create a row, so they must not free a slot by evicting a live
+  // session for an id that is already gone.
+  if (!SESSION_END_EVENTS.has(event)) evictOldestSessionIfNeeded(sessionId);
 
   if (isSubagentStop || isSubagentScopedSessionEnd) {
     updateCodexExitProbe(sessionId, srcAgentId, event);
@@ -3220,7 +3254,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     ? pickDisplayHint("working", existing, displayHint)
     : null;
 
-  if (event === "SessionEnd") {
+  if (SESSION_END_EVENTS.has(event)) {
     const endingSession = sessions.get(sessionId);
     const deferredCueSessions = [];
     if (srcAgentId === "codex" && srcHeadless) {
@@ -3488,7 +3522,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   if (ONESHOT_STATES.has(state)) {
     // Recoverable errors and compaction do not prove a terminal wait ended.
     if (isTerminalWaitSession(sessions.get(sessionId)) && state !== "notification"
-      && event !== "agentStop" && event !== "sessionEnd" && getPendingAttentionIds().has(sessionId)) {
+      && event !== "agentStop" && getPendingAttentionIds().has(sessionId)) {
       const displayState = resolveDisplayState();
       setState(displayState, getSvgOverride(displayState));
       return;
@@ -3624,6 +3658,7 @@ function restoreSessionFromLease(lease) {
     rawSessionId: sessionIdentity.rawSessionId,
     host: null,
     wslDistro: null,
+    claudeConfigDir: typeof lease.claudeConfigDir === "string" ? lease.claudeConfigDir : null,
     headless: false,
     platform: null,
     model: null,
@@ -3685,12 +3720,16 @@ function cleanStaleSessions() {
     const staleSession = childActivityAt === null ? s : {
       ...s, state: "working", updatedAt: Math.max(s.updatedAt || 0, childActivityAt),
     };
+    const hasPendingClaudeInteraction = hasPendingClaudeInteractionForSession(id)
+      || (typeof ctx.hasPendingClaudeTurnAskReminder === "function"
+        && ctx.hasPendingClaudeTurnAskReminder(id) === true);
     const decision = getStaleSessionDecision(staleSession, {
       now,
       isProcessAlive,
       deriveSessionBadge,
       shouldAutoClearDetachedSession,
       staleConfig,
+      hasPendingClaudeInteraction,
       hasPendingApprovalReminder: (isLocalApprovalReminderSession(s) && pendingApprovalSessionIds.has(id))
         || (isTerminalWaitSession(s) && terminalWaitSessionIds.has(id)),
       hasReplyableCompletionMapping: typeof ctx.hasReplyableCompletionMapping === "function"
@@ -3743,8 +3782,7 @@ function cleanStaleSessions() {
   if (startupRecoveryActive && sessions.size === 0) {
     detectRunningAgentProcesses((found) => {
       if (!found) {
-        startupRecoveryActive = false;
-        if (startupRecoveryTimer) { clearTimeout(startupRecoveryTimer); startupRecoveryTimer = null; }
+        endStartupRecovery();
       }
     });
   }
@@ -4166,6 +4204,36 @@ function getPendingAttentionIds() {
   return ids;
 }
 
+// A pending permission is still waiting while its connection (if any) is open.
+// Entries without a connection (turn-ask cards, reminders) stay live until the
+// pending list drops them.
+function isPendingPermissionConnectionLive(entry) {
+  return !(entry.res && (entry.res.destroyed || entry.res.writableEnded));
+}
+
+// A repeated start must not hide a session that is still waiting for the user to
+// approve a live request from the same agent.
+function hasLivePendingPermissionForSession(sessionId, agentId) {
+  return (ctx.pendingPermissions || []).some((entry) => (
+    entry
+    && entry.sessionId === sessionId
+    && entry.agentId === agentId
+    && isPendingPermissionConnectionLive(entry)
+  ));
+}
+
+// Pending Claude interactions (permission, elicitation, or turn-ask card) for
+// one session. Stale cleanup holds that session so a live card never loses its
+// row; the HUD applies its own visibility filters on top.
+function hasPendingClaudeInteractionForSession(sessionId) {
+  return (ctx.pendingPermissions || []).some((entry) => (
+    entry
+    && entry.agentId === "claude-code"
+    && entry.sessionId === sessionId
+    && isPendingPermissionConnectionLive(entry)
+  ));
+}
+
 // HUD-only view of the same set plus Claude Desktop's wrap_up question card
 // (#1326). The Claude card has no decision channel and must not drive the pet
 // projection or notification sound, so it stays out of getPendingAttentionIds().
@@ -4175,7 +4243,7 @@ function getHudPendingAttentionIds() {
     if (!entry || entry.agentId !== "claude-code" || entry.isClaudeTurnAskNotify !== true) continue;
     if (!entry.sessionId || entry.headless || entry.host || entry.wslDistro
       || entry.platform === "wsl" || (entry.profileId && entry.profileId !== "local")
-      || (entry.res && (entry.res.destroyed || entry.res.writableEnded))) continue;
+      || !isPendingPermissionConnectionLive(entry)) continue;
     ids.add(entry.sessionId);
   }
   return ids;
@@ -4436,6 +4504,12 @@ function startStartupRecovery() {
   }, STARTUP_RECOVERY_MAX_MS);
 }
 
+function endStartupRecovery() {
+  if (!startupRecoveryActive) return;
+  startupRecoveryActive = false;
+  if (startupRecoveryTimer) { clearTimeout(startupRecoveryTimer); startupRecoveryTimer = null; }
+}
+
 function getCurrentState() { return currentState; }
 function getDisplayRevision() { return displayRevision; }
 function getCurrentSvg() { return currentSvg; }
@@ -4490,11 +4564,11 @@ return {
   hasActiveCodexSubagents: codexSubagentPresentation.hasAny,
   setState, applyState, updateSession, observeClaudeToolPhase, recordRecapEventOnly, restoreSessionFromLease, resolveDisplayState, resolveVisualBinding, setUpdateVisualState,
   shouldDropForDnd,
-  enableDoNotDisturb, disableDoNotDisturb,
+  enableDoNotDisturb, disableDoNotDisturb, applyDndSleepState,
   // Read-only, unmerged account windows for source-specific alert deduplication.
   getAccountQuotaSnapshot: () => accountQuota.snapshot({ mergeSources: false }),
   startStaleCleanup, stopStaleCleanup, startWakePoll, stopWakePoll,
-  getSvgOverride, getPetPresentationSessions, refreshPetPresentation, cleanStaleSessions, startStartupRecovery, refreshTheme,
+  getSvgOverride, getPetPresentationSessions, refreshPetPresentation, cleanStaleSessions, startStartupRecovery, endStartupRecovery, refreshTheme,
   detectRunningAgentProcesses, buildSessionSnapshot,
   emitSessionSnapshot, broadcastSessionSnapshot, getLastSessionSnapshot,
   getActiveSessionAliasKeys,
@@ -4509,6 +4583,8 @@ return {
   clearClaudeStatuslineAuthority,
   updateAccountQuota,
   clearLocalClaudeQuota,
+  commitLocalDeepseekQuota,
+  clearLocalDeepseekQuota,
   commitLocalKimiQuota,
   clearLocalKimiQuota,
   getQuotaSourceCount,
