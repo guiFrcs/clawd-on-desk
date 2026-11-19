@@ -1,6 +1,6 @@
 "use strict";
 
-// Exercita o src/gravity.js com um contexto falso (tempo real, poucos segundos).
+// Exercises src/gravity.js against a fake context (real time, a few seconds).
 const test = require("node:test");
 const assert = require("node:assert");
 const fs = require("fs");
@@ -67,7 +67,7 @@ function tempFloorFile() {
 function makeGravity(ctx, floorFile = tempFloorFile()) {
   return initGravity(ctx, {
     floorFile,
-    getDisplayKey: () => "monitor-teste",
+    getDisplayKey: () => "test-display",
     getCursorPoint: () => ctx.cursor,
     setRotation: (degrees) => {
       ctx.rotations.push(degrees);
@@ -89,7 +89,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const lastY = (ctx) => ctx.applied[ctx.applied.length - 1].y;
 const lastX = (ctx) => ctx.applied[ctx.applied.length - 1].x;
 
-// Arrasta em tempo real: um passo de (dx, dy) a cada ~16 ms, como os drag-move do Clawd.
+// Drags in real time: one (dx, dy) step every ~16 ms, like Clawd's drag-move events.
 async function drag(ctx, gravity, dx, dy, steps = 6) {
   gravity.beginDrag();
   let { x, y } = ctx.getPetWindowBounds();
@@ -109,7 +109,7 @@ function releaseAndLand(gravity) {
   });
 }
 
-test("cai acelerando até o chão e avisa o pouso uma vez", async () => {
+test("falls with acceleration to the floor and reports the landing once", async () => {
   const ctx = makeCtx(100);
   const gravity = makeGravity(ctx);
   const ends = [];
@@ -118,30 +118,30 @@ test("cai acelerando até o chão e avisa o pouso uma vez", async () => {
     assert.strictEqual(gravity.isFalling(), true);
   });
   assert.deepStrictEqual(ends, [true]);
-  assert.strictEqual(landing.intensity, 1, "queda de 732 px: achatamento cheio");
+  assert.strictEqual(landing.intensity, 1, "732 px fall: full squash");
   assert.strictEqual(gravity.isFalling(), false);
   const ys = ctx.applied.map((b) => b.y);
   assert.strictEqual(ys[ys.length - 1], FLOOR_Y);
   assert.ok(ctx.applied.every((b) => b.x === 500 && b.width === PET && b.height === PET));
-  for (let i = 1; i < ys.length; i++) assert.ok(ys[i] >= ys[i - 1], "nunca sobe");
+  for (let i = 1; i < ys.length; i++) assert.ok(ys[i] >= ys[i - 1], "never goes up");
   const firstStep = ys[1] - ys[0];
   const lastStep = ys[ys.length - 2] - ys[ys.length - 3];
-  assert.ok(lastStep > firstStep * 3, `acelera (primeiro passo ${firstStep}, último ${lastStep})`);
+  assert.ok(lastStep > firstStep * 3, `accelerates (first step ${firstStep}, last ${lastStep})`);
   assert.strictEqual(ctx.hitSyncs, ctx.applied.length);
   assert.strictEqual(ctx.releases, 1);
-  assert.deepStrictEqual(ctx.rotations, [], "queda reta não gira");
+  assert.deepStrictEqual(ctx.rotations, [], "a straight fall does not spin");
 });
 
-test("achatamento proporcional à altura: leve em 100 px, nenhum em 30 px", async () => {
+test("squash scales with the drop height: light at 100 px, none at 30 px", async () => {
   const low = await fallFrom(FLOOR_Y - 100);
   assert.strictEqual(low.landed, true);
-  assert.ok(low.info.intensity > 0.1 && low.info.intensity < 0.4, `100 px deu ${low.info.intensity}`);
+  assert.ok(low.info.intensity > 0.1 && low.info.intensity < 0.4, `100 px gave ${low.info.intensity}`);
   const tiny = await fallFrom(FLOOR_Y - 30);
   assert.strictEqual(tiny.landed, true);
   assert.strictEqual(tiny.info.intensity, 0);
 });
 
-test("usa a área de trabalho do monitor onde foi solto, sem encaixe na borda", () => {
+test("uses the work area of the display where it was dropped, without edge pinning", () => {
   const ctx = makeCtx(100);
   const gravity = makeGravity(ctx);
   gravity.startFall(() => {});
@@ -150,15 +150,15 @@ test("usa a área de trabalho do monitor onde foi solto, sem encaixe na borda", 
   assert.strictEqual(ctx.clampOptions.allowEdgePinning, false);
 });
 
-test("já no chão: não cai", () => {
+test("already on the floor: does not fall", () => {
   const ctx = makeCtx(FLOOR_Y - 1);
   const gravity = makeGravity(ctx);
-  assert.strictEqual(gravity.startFall(() => assert.fail("não devia chamar")), false);
+  assert.strictEqual(gravity.startFall(() => assert.fail("should not be called")), false);
   assert.strictEqual(gravity.isFalling(), false);
   assert.strictEqual(ctx.applied.length, 0);
 });
 
-test("pego no ar: para onde está e avisa sem pouso", async () => {
+test("caught mid-air: stops where it is and reports no landing", async () => {
   const ctx = makeCtx(100);
   const gravity = makeGravity(ctx);
   const ends = [];
@@ -168,32 +168,32 @@ test("pego no ar: para onde está e avisa sem pouso", async () => {
   await wait(60);
   assert.deepStrictEqual(ends, [false, null]);
   const moves = ctx.applied.length;
-  assert.ok(lastY(ctx) < FLOOR_Y, "ficou no ar");
+  assert.ok(lastY(ctx) < FLOOR_Y, "stayed in the air");
   await wait(60);
-  assert.strictEqual(ctx.applied.length, moves, "não mexe mais depois de pego");
+  assert.strictEqual(ctx.applied.length, moves, "does not move after being caught");
 });
 
-test("modo mini: não cai", () => {
+test("mini mode: does not fall", () => {
   const ctx = makeCtx(100);
   ctx.miniMode = true;
   const gravity = makeGravity(ctx);
   assert.strictEqual(gravity.startFall(() => {}), false);
 });
 
-test("Shift ao soltar grava a altura acima da barra de tarefas, e a prateleira vale depois de reiniciar", async () => {
+test("Shift on release saves the height above the taskbar, and the shelf survives a restart", async () => {
   const floorFile = tempFloorFile();
   const shelfY = FLOOR_Y - 300;
   const setter = makeGravity(makeCtx(shelfY), floorFile);
   assert.strictEqual(setter.setFloorHere(), true);
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(floorFile, "utf8")).floors, {
-    "monitor-teste": { heightAboveTaskbar: 300 },
+    "test-display": { heightAboveTaskbar: 300 },
   });
   const above = await fallFrom(shelfY - 300, floorFile);
   assert.strictEqual(above.landed, true);
-  assert.strictEqual(lastY(above.ctx), shelfY, "de cima cai na prateleira");
+  assert.strictEqual(lastY(above.ctx), shelfY, "from above it lands on the shelf");
 });
 
-test("abaixo da prateleira cai até a barra de tarefas; em cima dela não cai", async () => {
+test("below the shelf it falls to the taskbar; on top of it, it does not fall", async () => {
   const floorFile = tempFloorFile();
   const shelfY = FLOOR_Y - 300;
   makeGravity(makeCtx(shelfY), floorFile).setFloorHere();
@@ -204,7 +204,7 @@ test("abaixo da prateleira cai até a barra de tarefas; em cima dela não cai", 
   assert.strictEqual(onShelf.started, false);
 });
 
-test("Shift ao soltar na barra de tarefas apaga a prateleira", () => {
+test("Shift on release at the taskbar clears the shelf", () => {
   const floorFile = tempFloorFile();
   makeGravity(makeCtx(FLOOR_Y - 300), floorFile).setFloorHere();
   const gravity = makeGravity(makeCtx(FLOOR_Y), floorFile);
@@ -214,7 +214,7 @@ test("Shift ao soltar na barra de tarefas apaga a prateleira", () => {
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(floorFile, "utf8")).floors, {});
 });
 
-test("Voltar para a barra de tarefas: apaga a prateleira e o pet em cima dela cai", async () => {
+test("the back-to-taskbar menu item clears the shelf and the pet on it falls", async () => {
   const floorFile = tempFloorFile();
   const shelfY = FLOOR_Y - 300;
   const ctx = makeCtx(shelfY);
@@ -231,15 +231,15 @@ test("Voltar para a barra de tarefas: apaga a prateleira e o pet em cima dela ca
 
 const toggle = (g) => g.buildMenuItem().submenu.find((i) => i.label === "Queda ao soltar");
 
-test("desligada pelo menu: não cai nem marca chão, e continua desligada depois de reiniciar", () => {
+test("turned off from the menu: no fall and no floor marking, and it stays off after a restart", () => {
   const floorFile = tempFloorFile();
   const ctx = makeCtx(100);
   const gravity = makeGravity(ctx, floorFile);
-  assert.strictEqual(toggle(gravity).checked, true, "começa ligada");
+  assert.strictEqual(toggle(gravity).checked, true, "starts on");
   toggle(gravity).click();
   assert.strictEqual(gravity.isEnabled(), false);
   assert.strictEqual(toggle(gravity).checked, false);
-  assert.strictEqual(gravity.startFall(() => assert.fail("não devia cair")), false);
+  assert.strictEqual(gravity.startFall(() => assert.fail("should not fall")), false);
   assert.strictEqual(gravity.setFloorHere(), false);
   assert.strictEqual(JSON.parse(fs.readFileSync(floorFile, "utf8")).enabled, false);
   const restarted = makeGravity(makeCtx(100), floorFile);
@@ -247,7 +247,7 @@ test("desligada pelo menu: não cai nem marca chão, e continua desligada depois
   assert.strictEqual(restarted.startFall(() => {}), false);
 });
 
-test("desligar no meio da queda para onde está; religar com o pet no ar faz cair", async () => {
+test("turning off mid-fall stops it where it is; turning back on with the pet in the air makes it fall", async () => {
   const floorFile = tempFloorFile();
   const ctx = makeCtx(100);
   const gravity = makeGravity(ctx, floorFile);
@@ -258,33 +258,33 @@ test("desligar no meio da queda para onde está; religar com o pet no ar faz cai
   gravity.setEnabled(false);
   assert.deepStrictEqual(ends, [false]);
   const stoppedAt = lastY(ctx);
-  assert.ok(stoppedAt < FLOOR_Y, "parou no ar");
+  assert.ok(stoppedAt < FLOOR_Y, "stopped in the air");
   await wait(60);
   assert.strictEqual(lastY(ctx), stoppedAt);
   const landed = new Promise((resolve) => gravity.setFallEndHandler((value) => resolve(value)));
   gravity.setEnabled(true);
-  assert.strictEqual(gravity.isFalling(), true, "religou e já está caindo");
+  assert.strictEqual(gravity.isFalling(), true, "turned back on and already falling");
   assert.strictEqual(await landed, true);
   assert.strictEqual(lastY(ctx), FLOOR_Y);
 });
 
 const s = (x, y, t) => ({ x, y, t });
-// Seis amostras a cada 16 ms andando `px` na horizontal; solta 5 ms depois da última.
+// Six samples 16 ms apart, `px` apart horizontally; the release comes 5 ms after the last one.
 const line = (px) => [0, 1, 2, 3, 4, 5].map((i) => s(i * px, 0, i * 16));
 
-test("medição: o trecho mais rápido dos últimos 120 ms; folga de 80 ms do VS Code", () => {
+test("measurement: the fastest stretch of the last 120 ms; VS Code's 80 ms grace", () => {
   assert.strictEqual(Math.round(measureReleaseVelocity(line(32), 85).speed), 2000);
-  // Flick a 3000 px/s e freada a ~300 px/s antes de soltar: vale o pico, não a média.
+  // A flick at 3000 px/s that slows to ~300 px/s before the release: the peak counts, not the average.
   const flick = [s(0, 0, 0), s(48, 0, 16), s(96, 0, 32), s(144, 0, 48), s(149, 0, 64), s(154, 0, 80), s(159, 0, 96)];
   assert.strictEqual(Math.round(measureReleaseVelocity(flick, 100).speed), 3000);
-  assert.strictEqual(measureReleaseVelocity(line(32), 80 + 81), null, "mouse parado mais de 80 ms antes de soltar");
-  assert.strictEqual(measureReleaseVelocity([s(0, 0, 0)], 5), null, "uma amostra só");
-  // Pico antigo, fora dos 120 ms, não conta.
+  assert.strictEqual(measureReleaseVelocity(line(32), 80 + 81), null, "mouse still for more than 80 ms before the release");
+  assert.strictEqual(measureReleaseVelocity([s(0, 0, 0)], 5), null, "a single sample");
+  // An old peak, outside the 120 ms window, does not count.
   const old = [s(0, 0, 0), s(200, 0, 16), s(201, 0, 150), s(202, 0, 166), s(203, 0, 182)];
   assert.ok(measureReleaseVelocity(old, 185).speed < 200);
 });
 
-test("teto suave: abaixo de 650 px/s não arremessa; acima, 3200 × tanh(v/3200)", () => {
+test("soft cap: no throw below 650 px/s; above it, 3200 × tanh(v/3200)", () => {
   const at = (px) => getThrowVelocity(line(px), 85);
   assert.strictEqual(at(8), null, "500 px/s");
   const v1000 = at(16).x;
@@ -294,27 +294,27 @@ test("teto suave: abaixo de 650 px/s não arremessa; acima, 3200 × tanh(v/3200)
   assert.ok(Math.abs(v1000 - 968.7) < 1, `1000 px/s → ${v1000}`);
   assert.ok(Math.abs(v2000 - 1774.7) < 1, `2000 px/s → ${v2000}`);
   assert.ok(Math.abs(v4000 - 2714.5) < 1, `4000 px/s → ${v4000}`);
-  assert.ok(v10000 > 3150 && v10000 < 3200, `10000 px/s fica abaixo de 3200 (${v10000})`);
-  assert.ok(v2000 > v1000 * 1.7 && v4000 > v2000 * 1.4, "continua variando com a velocidade do mouse");
+  assert.ok(v10000 > 3150 && v10000 < 3200, `10000 px/s stays below 3200 (${v10000})`);
+  assert.ok(v2000 > v1000 * 1.7 && v4000 > v2000 * 1.4, "still varies with the mouse speed");
   const diagonal = getThrowVelocity([0, 1, 2, 3, 4, 5].map((i) => s(i * 16, -i * 16, i * 16)), 85);
-  assert.ok(Math.abs(diagonal.x + diagonal.y) < 1e-9, "mantém a direção do gesto");
+  assert.ok(Math.abs(diagonal.x + diagonal.y) < 1e-9, "keeps the direction of the gesture");
 });
 
-test("passo do voo: para na parede e avisa; o teto devolve 20% da velocidade", () => {
+test("flight step: stops at the wall and reports it; the ceiling returns 20% of the speed", () => {
   const bounds = { minX: 0, maxX: 100, minY: 0 };
   const wall = advanceThrow({ x: 90, y: 50, vx: 1000, vy: 0 }, 32, bounds);
   assert.strictEqual(wall.wall, "right");
   assert.strictEqual(wall.x, 100);
-  assert.strictEqual(wall.vx, 1000, "quem inverte é o laço, depois da pausa na parede");
-  assert.ok(Math.abs(wall.y - 50.14) < 0.01, `só desce o tempo até a parede (${wall.y})`);
+  assert.strictEqual(wall.vx, 1000, "the loop reverses it, after the pause at the wall");
+  assert.ok(Math.abs(wall.y - 50.14) < 0.01, `drops only for the time it takes to reach the wall (${wall.y})`);
   const ceiling = advanceThrow({ x: 50, y: 5, vx: 0, vy: -1000 }, 32, bounds);
   assert.strictEqual(ceiling.y, 0);
-  assert.ok(Math.abs(ceiling.vy - 182.08) < 0.01, `teto: ${ceiling.vy}`);
+  assert.ok(Math.abs(ceiling.vy - 182.08) < 0.01, `ceiling: ${ceiling.vy}`);
   const free = advanceThrow({ x: 50, y: 50, vx: -500, vy: 0 }, 16, bounds);
   assert.strictEqual(free.wall, null);
 });
 
-test("arremesso para a direita: bate na parede, volta devagar e pousa", async () => {
+test("throw to the right: hits the wall, comes back slowly and lands", async () => {
   const ctx = makeCtx(300, MAX_X - 470);
   const gravity = makeGravity(ctx);
   await drag(ctx, gravity, 40, 0);
@@ -324,128 +324,128 @@ test("arremesso para a direita: bate na parede, volta devagar e pousa", async ()
   const frames = ctx.applied;
   const xs = frames.map((b) => b.x);
   const hit = xs.indexOf(MAX_X);
-  assert.ok(hit >= 2, `chegou na parede direita (${MAX_X}) depois de voar; máximo foi ${Math.max(...xs)}`);
-  assert.ok(xs.every((x) => x <= MAX_X), "não atravessa a parede");
+  assert.ok(hit >= 2, `reached the right wall (${MAX_X}) after flying; the max was ${Math.max(...xs)}`);
+  assert.ok(xs.every((x) => x <= MAX_X), "does not go through the wall");
   const back = frames.slice(hit + 1).filter((f) => f.x < MAX_X);
-  assert.ok(back.length >= 3, "voltou da parede");
+  assert.ok(back.length >= 3, "came back from the wall");
   const speedIn = (frames[hit - 1].x - frames[hit - 2].x) / (frames[hit - 1].t - frames[hit - 2].t);
   const speedBack = (back[0].x - back[2].x) / (back[2].t - back[0].t);
   const ratio = speedBack / speedIn;
-  assert.ok(ratio > 0.1 && ratio < 0.35, `volta com ~20% da velocidade (${ratio.toFixed(2)})`);
+  assert.ok(ratio > 0.1 && ratio < 0.35, `comes back with ~20% of the speed (${ratio.toFixed(2)})`);
   assert.strictEqual(lastY(ctx), FLOOR_Y);
   assert.ok(result.info.intensity > 0);
-  assert.ok(ctx.rotations.includes(90), "virou 90° de frente para a parede direita");
+  assert.ok(ctx.rotations.includes(90), "turned 90° to face the right wall");
   const afterWall = ctx.rotations.slice(ctx.rotations.indexOf(90));
-  assert.ok(afterWall.every((r) => r >= 0 && r <= 90), "depois da parede só se endireita");
-  assert.strictEqual(ctx.rotations[ctx.rotations.length - 1], 0, "pousou em pé");
+  assert.ok(afterWall.every((r) => r >= 0 && r <= 90), "after the wall it only straightens up");
+  assert.strictEqual(ctx.rotations[ctx.rotations.length - 1], 0, "landed upright");
 });
 
-test("ritmo da volta pelo ângulo: reto para cima é a mais lenta, de lado a mais rápida", () => {
+test("spin pace by angle: straight up is the slowest, sideways the fastest", () => {
   assert.strictEqual(getSpinTurnMs({ x: 0, y: -2000 }), 1100);
   assert.strictEqual(getSpinTurnMs({ x: 2000, y: 0 }), 600);
   const diagonal = getSpinTurnMs({ x: 1500, y: -1500 });
   assert.ok(Math.abs(diagonal - 746) < 1, `45°: ${diagonal} ms`);
   const near = (a, b) => Math.abs(a - b) < 1e-6;
-  assert.ok(near(getSpinTurnMs({ x: -1500, y: -1500 }), diagonal), "para a esquerda, o mesmo ritmo");
-  assert.ok(near(getSpinTurnMs({ x: 1500, y: 1500 }), diagonal), "para baixo também");
-  assert.ok(near(getSpinTurnMs({ x: 300, y: -300 }), diagonal), "a força não muda o ritmo");
+  assert.ok(near(getSpinTurnMs({ x: -1500, y: -1500 }), diagonal), "to the left, the same pace");
+  assert.ok(near(getSpinTurnMs({ x: 1500, y: 1500 }), diagonal), "downward too");
+  assert.ok(near(getSpinTurnMs({ x: 300, y: -300 }), diagonal), "the throw strength does not change the pace");
   const steep = getSpinTurnMs({ x: 500, y: -2000 });
-  assert.ok(steep < 1100 && steep > diagonal, `quase reto (14°): ${steep} ms`);
+  assert.ok(steep < 1100 && steep > diagonal, `nearly straight (14°): ${steep} ms`);
 });
 
-test("uma volta: mais rápida no começo, desacelerando até ficar em pé", () => {
+test("one turn: fastest at the start, slowing down until upright", () => {
   assert.strictEqual(getSpinRotation(1, 0), 0);
-  assert.ok(Math.abs(getSpinRotation(1, 0.5) - 254.56) < 0.01, "metade do tempo, 71% da volta");
-  assert.ok(getSpinRotation(1, 0.9) > 355, "os últimos 10% do tempo são só ~4°");
+  assert.ok(Math.abs(getSpinRotation(1, 0.5) - 254.56) < 0.01, "half the time, 71% of the turn");
+  assert.ok(getSpinRotation(1, 0.9) > 355, "the last 10% of the time is only ~4°");
   assert.strictEqual(getSpinRotation(1, 1), 360);
-  assert.strictEqual(getSpinRotation(1, 2), 360, "nunca passa de uma volta");
-  assert.ok(Math.abs(getSpinRotation(-1, 0.5) + 254.56) < 0.01, "para a esquerda gira ao contrário");
+  assert.strictEqual(getSpinRotation(1, 2), 360, "never goes past one turn");
+  assert.ok(Math.abs(getSpinRotation(-1, 0.5) + 254.56) < 0.01, "to the left it spins the other way");
 });
 
-// Todo ângulo que voltou a 0 no pouso tinha terminado a volta (≥ 340°) ou estava quase em pé.
+// Every angle that went back to 0 on landing had finished the turn (≥ 340°) or was nearly upright.
 function assertNoSnap(rotations) {
   rotations.forEach((r, i) => {
     if (r !== 0 || i === 0) return;
     const before = Math.abs(rotations[i - 1]);
-    assert.ok(before >= 340 || before <= 25, `voltou a 0 no meio da volta (de ${rotations[i - 1]}°)`);
+    assert.ok(before >= 340 || before <= 25, `went back to 0 mid-turn (from ${rotations[i - 1]}°)`);
   });
 }
 
-// Do soltar até passar de meia volta (180°), em ms.
+// From the release until past half a turn (180°), in ms.
 async function halfTurnMs(ctx, gravity) {
   const releasedAt = performance.now();
   assert.strictEqual((await releaseAndLand(gravity)).landed, true);
   const i = ctx.rotations.findIndex((r) => Math.abs(r) >= 180);
-  assert.ok(i >= 0, "passou de meia volta");
+  assert.ok(i >= 0, "went past half a turn");
   return ctx.rotationTimes[i] - releasedAt;
 }
 
-test("reto para cima gira mais devagar que a 45°", async () => {
+test("straight up spins slower than at 45°", async () => {
   const up = makeCtx(800, 900);
   const upGravity = makeGravity(up);
   await drag(up, upGravity, 0, -40);
   const upMs = await halfTurnMs(up, upGravity);
-  assert.ok(Math.max(...up.rotations) >= 340, "reto para cima também dá a volta inteira");
+  assert.ok(Math.max(...up.rotations) >= 340, "straight up also does the full turn");
 
   const diagonal = makeCtx(800, 300);
   const diagonalGravity = makeGravity(diagonal);
   await drag(diagonal, diagonalGravity, 30, -30);
   const diagonalMs = await halfTurnMs(diagonal, diagonalGravity);
-  assert.ok(upMs > diagonalMs * 1.25, `meia volta: reto ${Math.round(upMs)} ms, 45° ${Math.round(diagonalMs)} ms`);
+  assert.ok(upMs > diagonalMs * 1.25, `half turn: straight up ${Math.round(upMs)} ms, 45° ${Math.round(diagonalMs)} ms`);
 });
 
-test("arremesso para cima e para o lado: uma volta só e pousa em pé", async () => {
+test("throw up and sideways: a single turn, landing upright", async () => {
   const ctx = makeCtx(700, 300);
   const gravity = makeGravity(ctx);
   await drag(ctx, gravity, 30, -40);
   const result = await releaseAndLand(gravity);
   assert.strictEqual(result.landed, true);
   const maxSpin = Math.max(...ctx.rotations);
-  assert.ok(maxSpin >= 300 && maxSpin <= 360, `uma volta (${maxSpin}°)`);
-  assert.ok(ctx.rotations.every((r) => r >= 0), "num sentido só");
-  assert.strictEqual(ctx.rotations[ctx.rotations.length - 1], 0, "pousou em pé");
+  assert.ok(maxSpin >= 300 && maxSpin <= 360, `one turn (${maxSpin}°)`);
+  assert.ok(ctx.rotations.every((r) => r >= 0), "in one direction only");
+  assert.strictEqual(ctx.rotations[ctx.rotations.length - 1], 0, "landed upright");
   assertNoSnap(ctx.rotations);
 });
 
-test("arremesso reto para o lado também dá uma volta, no sentido do gesto", async () => {
+test("a straight sideways throw also does one turn, in the direction of the gesture", async () => {
   const ctx = makeCtx(300, 1700);
   const gravity = makeGravity(ctx);
   await drag(ctx, gravity, -40, 0);
   assert.strictEqual((await releaseAndLand(gravity)).landed, true);
   const minSpin = Math.min(...ctx.rotations);
-  assert.ok(minSpin <= -300 && minSpin >= -360, `uma volta para a esquerda (${minSpin}°)`);
+  assert.ok(minSpin <= -300 && minSpin >= -360, `one turn to the left (${minSpin}°)`);
   assert.strictEqual(ctx.rotations[ctx.rotations.length - 1], 0);
   assertNoSnap(ctx.rotations);
 });
 
-test("voo curto: perto do chão não gira; voo médio completa a volta até o pouso", async () => {
+test("short flight: no spin near the floor; a medium flight finishes the turn by the landing", async () => {
   const low = makeCtx(FLOOR_Y - 150);
   const lowGravity = makeGravity(low);
   await drag(low, lowGravity, 40, 0);
   assert.strictEqual((await releaseAndLand(lowGravity)).landed, true);
-  assert.deepStrictEqual(low.rotations, [], "0,33 s de voo: a volta teria menos de 450 ms");
+  assert.deepStrictEqual(low.rotations, [], "0.33 s flight: the turn would take under 450 ms");
 
   const mid = makeCtx(FLOOR_Y - 300);
   const midGravity = makeGravity(mid);
   await drag(mid, midGravity, 40, 0);
   assert.strictEqual((await releaseAndLand(midGravity)).landed, true);
-  assert.ok(Math.max(...mid.rotations) >= 340, "deu a volta");
+  assert.ok(Math.max(...mid.rotations) >= 340, "did the full turn");
   assertNoSnap(mid.rotations);
 });
 
-test("pego no ar girando: volta a ficar em pé na hora", async () => {
+test("caught mid-air while spinning: back upright at once", async () => {
   const ctx = makeCtx(700, 300);
   const gravity = makeGravity(ctx);
   await drag(ctx, gravity, 30, -40);
   gravity.release(() => {});
   await wait(120);
-  assert.ok(ctx.rotations.some((r) => r !== 0), "estava girando");
+  assert.ok(ctx.rotations.some((r) => r !== 0), "was spinning");
   ctx.dragLocked = true;
   await wait(40);
   assert.strictEqual(ctx.rotations[ctx.rotations.length - 1], 0);
 });
 
-test("arremesso para cima por baixo da prateleira: passa por ela e pousa em cima", async () => {
+test("throw up from below the shelf: passes through it and lands on top", async () => {
   const floorFile = tempFloorFile();
   const shelfY = FLOOR_Y - 300;
   makeGravity(makeCtx(shelfY), floorFile).setFloorHere();
@@ -454,17 +454,17 @@ test("arremesso para cima por baixo da prateleira: passa por ela e pousa em cima
   await drag(ctx, gravity, 0, -40);
   const result = await releaseAndLand(gravity);
   assert.strictEqual(result.landed, true);
-  assert.ok(Math.min(...ctx.applied.map((b) => b.y)) < shelfY, "subiu acima da prateleira");
+  assert.ok(Math.min(...ctx.applied.map((b) => b.y)) < shelfY, "rose above the shelf");
   assert.strictEqual(lastY(ctx), shelfY);
 });
 
-test("soltar devagar ou com o mouse parado: só cai, sem arremesso", async () => {
+test("slow release or a still mouse: it just falls, with no throw", async () => {
   const slow = makeCtx(300);
   const slowGravity = makeGravity(slow);
   await drag(slow, slowGravity, 4, 0);
   const startX = slow.getPetWindowBounds().x;
   assert.strictEqual((await releaseAndLand(slowGravity)).landed, true);
-  assert.ok(slow.applied.every((b) => b.x === startX), "lento: cai reto");
+  assert.ok(slow.applied.every((b) => b.x === startX), "slow: falls straight down");
 
   const parked = makeCtx(300);
   const parkedGravity = makeGravity(parked);
@@ -472,5 +472,5 @@ test("soltar devagar ou com o mouse parado: só cai, sem arremesso", async () =>
   await wait(120);
   const parkedX = parked.getPetWindowBounds().x;
   assert.strictEqual((await releaseAndLand(parkedGravity)).landed, true);
-  assert.ok(parked.applied.every((b) => b.x === parkedX), "parou antes de soltar: cai reto");
+  assert.ok(parked.applied.every((b) => b.x === parkedX), "stopped before the release: falls straight down");
 });
