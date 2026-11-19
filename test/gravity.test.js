@@ -60,9 +60,13 @@ function makeCtx(y, x = 500) {
   return ctx;
 }
 
-function tempFloorFile() {
+// Gravity is off by default, so the tests start from a saved "on" switch;
+// null leaves no file, as on a first run.
+function tempFloorFile(saved = { version: 1, enabled: true, floors: {} }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-gravity-test-"));
-  return path.join(dir, "gravity-floor.json");
+  const file = path.join(dir, "gravity-floor.json");
+  if (saved) fs.writeFileSync(file, JSON.stringify(saved));
+  return file;
 }
 
 function makeGravity(ctx, floorFile = tempFloorFile()) {
@@ -246,6 +250,18 @@ test("the menu is translated into every supported language, English by default",
 });
 
 const toggle = (g) => g.buildMenuItem().submenu.find((i) => i.label === i18n.en.gravityFallWhenReleased);
+
+test("off by default: with no saved switch it neither falls nor marks a floor", () => {
+  const floorFile = tempFloorFile(null);
+  const ctx = makeCtx(100);
+  const gravity = makeGravity(ctx, floorFile);
+  assert.strictEqual(gravity.isEnabled(), false);
+  assert.strictEqual(toggle(gravity).checked, false);
+  assert.strictEqual(gravity.startFall(() => assert.fail("should not fall")), false);
+  assert.strictEqual(gravity.setFloorHere(), false);
+  assert.strictEqual(ctx.applied.length, 0);
+  assert.strictEqual(fs.existsSync(floorFile), false, "nothing is saved until it is turned on");
+});
 
 test("turned off from the menu: no fall and no floor marking, and it stays off after a restart", () => {
   const floorFile = tempFloorFile();

@@ -11,7 +11,7 @@
 // shelf set with Shift+release, stored in ~/.clawd/gravity-floor.json as its
 // height above the taskbar floor. The shelf is one-way: it only catches a pet
 // coming down onto it, and below it the pet falls to the taskbar. The same
-// file keeps the on/off switch from the Gravity menu (on by default).
+// file keeps the on/off switch from the Gravity menu (off by default).
 //
 // advanceThrow, the wall pose and the release rules of measureReleaseVelocity
 // are adapted from VS Code's chat pet (src/vs/workbench/contrib/chat/browser/widget/
@@ -190,7 +190,7 @@ module.exports = function initGravity(ctx, options = {}) {
   // Menu labels in the app's language; English when no translator is given.
   const translate = options.t || createTranslator(() => "en");
   const saved = loadState();
-  let enabled = saved.enabled !== false;
+  let enabled = saved.enabled === true;
   let floors = saved.floors;
   let falling = false;
   let fallTimer = null;
@@ -211,11 +211,11 @@ module.exports = function initGravity(ctx, options = {}) {
     try {
       const data = JSON.parse(fs.readFileSync(floorFile, "utf8"));
       return {
-        enabled: !(data && data.enabled === false),
+        enabled: !!(data && data.enabled === true),
         floors: data && data.floors && typeof data.floors === "object" ? data.floors : {},
       };
     } catch {
-      return { enabled: true, floors: {} };
+      return { enabled: false, floors: {} };
     }
   }
 
