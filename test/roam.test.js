@@ -1475,6 +1475,76 @@ describe("gravity fall: roam holds still", () => {
   });
 });
 
+describe("gravity on: roam walks along the floor", () => {
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  });
+
+  afterEach(() => {
+    mock.timers.reset();
+    mock.reset();
+  });
+
+  function walkOnce(roam) {
+    roam.tick();
+    mock.timers.tick(8000);
+    for (let i = 0; i < 2000 && roam.isRoamAnimating(); i++) {
+      mock.timers.tick(16);
+    }
+  }
+
+  it("gravity on: every walk goes sideways and keeps the pet's height", () => {
+    // With 0.99 the free picker walks diagonally and the axis-constrained one vertically.
+    mock.method(Math, "random", () => 0.99);
+    for (const constrainAxis of [false, true]) {
+      const ctx = makeCtx({ isGravityEnabled: () => true });
+      const roam = roamModule(ctx);
+      roam.setEnabled(true);
+      roam.setConstrainAxis(constrainAxis);
+      walkOnce(roam);
+      assert.ok(ctx._appliedBounds.length > 0, "walked");
+      assert.ok(ctx._appliedBounds.every((b) => b.y === 300), "kept its height");
+      assert.notStrictEqual(ctx._realBounds.x, 400, "moved sideways");
+      roam.setEnabled(false);
+    }
+  });
+
+  it("gravity on: a roam fence that leaves out the pet's height holds it in place", () => {
+    mock.method(Math, "random", () => 0.5);
+    const ctx = makeCtx({ isGravityEnabled: () => true });
+    // The pet stands on the floor; the fence covers only the area above it.
+    ctx._bounds.y = 960;
+    ctx._realBounds.y = 960;
+    ctx.roamFence = {
+      get: () => ({ active: true, left: 0, top: 0.1, right: 1, bottom: 0.8 }),
+      refresh: () => {},
+    };
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    walkOnce(roam);
+    assert.deepStrictEqual(ctx._appliedBounds, [], "reaching the fence would mean leaving the ground");
+    assert.deepStrictEqual(ctx._stateLog, []);
+  });
+
+  it("gravity off: walks exactly as without the gravity predicate", () => {
+    mock.method(Math, "random", () => 0.99);
+    const off = makeCtx({ isGravityEnabled: () => false });
+    const none = makeCtx();
+    const roamOff = roamModule(off);
+    const roamNone = roamModule(none);
+    roamOff.setEnabled(true);
+    roamNone.setEnabled(true);
+    roamOff.tick();
+    roamNone.tick();
+    mock.timers.tick(8000);
+    for (let i = 0; i < 2000 && roamNone.isRoamAnimating(); i++) {
+      mock.timers.tick(16);
+    }
+    assert.ok(none._appliedBounds.some((b) => b.y !== 300), "a free walk also moves vertically");
+    assert.deepStrictEqual(off._appliedBounds, none._appliedBounds);
+  });
+});
+
 describe("roam pauses during settings size preview", () => {
   beforeEach(() => {
     mock.method(Math, "random", () => 0.9);

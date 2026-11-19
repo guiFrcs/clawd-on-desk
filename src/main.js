@@ -6051,8 +6051,10 @@ const _roamCtx = {
   resolveDisplayState,
   get win() { return win; },
   get dragLocked() { return petWindowRuntime.isDragLocked(); },
-  // Gravity: roam holds still while the pet falls (_gravity is built below).
+  // Gravity (_gravity is built below): roam holds still while the pet falls
+  // and, with gravity on, walks only along the floor or shelf.
   isGravityFalling: () => _gravity.isFalling(),
+  isGravityEnabled: () => _gravity.isEnabled(),
   getPetWindowBounds,
   applyPetWindowBounds,
   // #569: lets roam anchor to the keep-size frozen size when that toggle is on

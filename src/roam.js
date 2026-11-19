@@ -67,6 +67,15 @@ module.exports = function initRoam(ctx) {
     );
   }
 
+  // Gravity on: walks only go sideways, at the height of the floor or shelf
+  // the pet stands on, so roam never lifts it into the air.
+  function isGroundWalkOnly() {
+    return !!(
+      typeof ctx.isGravityEnabled === "function"
+      && ctx.isGravityEnabled()
+    );
+  }
+
   // Issue #690 plan §4.3.10's roam protection-period release point. Roam's
   // per-frame applyPetWindowBounds() (ROAM_FRAME_MS=16) is a continuous
   // native-write period the reconcile state machine must not fight — every
@@ -298,7 +307,7 @@ module.exports = function initRoam(ctx) {
      * The stationary coordinate is never clamped or adjusted — if the pet starts
      * outside the inner margin band, that position is kept as-is so the "axis-only"
      * promise holds even at screen edges. */
-    if (constrainAxis) {
+    if (constrainAxis || isGroundWalkOnly()) {
       /* #810 fence × #686 axis: a single-axis move keeps one coordinate
        * exactly, so that stationary coordinate must already satisfy the fence
        * or the final window ends up outside it (PR #810 review). Rule:
@@ -402,6 +411,12 @@ module.exports = function initRoam(ctx) {
         }
       };
 
+      // Ground walk: sideways only. A fence that leaves out the pet's height
+      // cannot be reached without leaving the ground, so roam holds.
+      if (isGroundWalkOnly()) {
+        if (forcedAxis === "vertical" || partialRecovery) return null;
+        return tryAxis("horizontal", forcedAxis === "horizontal");
+      }
       if (forcedAxis) {
         const target = tryAxis(forcedAxis, true);
         if (target && partialRecovery) target.partial = true;
