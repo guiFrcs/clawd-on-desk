@@ -8,6 +8,7 @@ const os = require("os");
 const path = require("path");
 const initGravity = require("../src/gravity");
 const { measureReleaseVelocity, getThrowVelocity, advanceThrow, getSpinTurnMs, getSpinRotation } = initGravity;
+const { i18n, SUPPORTED_LANGS, createTranslator } = require("../src/i18n");
 
 const WORK_AREA = { x: 0, y: 0, width: 1920, height: 1032 };
 const BOTTOM_MARGIN = 10;
@@ -220,7 +221,7 @@ test("the back-to-taskbar menu item clears the shelf and the pet on it falls", a
   const ctx = makeCtx(shelfY);
   const gravity = makeGravity(ctx, floorFile);
   gravity.setFloorHere();
-  const reset = (g) => g.buildMenuItem().submenu.find((i) => i.label === "Voltar para a barra de tarefas");
+  const reset = (g) => g.buildMenuItem().submenu.find((i) => i.label === i18n.en.gravityBackToTaskbar);
   assert.strictEqual(reset(gravity).enabled, true);
   const landed = new Promise((resolve) => gravity.setFallEndHandler((value) => resolve(value)));
   reset(gravity).click();
@@ -229,7 +230,21 @@ test("the back-to-taskbar menu item clears the shelf and the pet on it falls", a
   assert.strictEqual(reset(gravity).enabled, false);
 });
 
-const toggle = (g) => g.buildMenuItem().submenu.find((i) => i.label === "Queda ao soltar");
+test("the menu is translated into every supported language, English by default", () => {
+  const labels = (item) => [item.label, ...item.submenu.filter((i) => i.type !== "separator").map((i) => i.label)];
+  const keys = ["gravity", "gravityFallWhenReleased", "gravitySetFloorHint", "gravityBackToTaskbar"];
+  assert.deepStrictEqual(labels(makeGravity(makeCtx(100)).buildMenuItem()), keys.map((key) => i18n.en[key]));
+  for (const lang of SUPPORTED_LANGS) {
+    const gravity = initGravity(makeCtx(100), {
+      floorFile: tempFloorFile(),
+      getDisplayKey: () => "test-display",
+      t: createTranslator(() => lang),
+    });
+    assert.deepStrictEqual(labels(gravity.buildMenuItem()), keys.map((key) => i18n[lang][key]), lang);
+  }
+});
+
+const toggle = (g) => g.buildMenuItem().submenu.find((i) => i.label === i18n.en.gravityFallWhenReleased);
 
 test("turned off from the menu: no fall and no floor marking, and it stays off after a restart", () => {
   const floorFile = tempFloorFile();

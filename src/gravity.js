@@ -11,7 +11,7 @@
 // shelf set with Shift+release, stored in ~/.clawd/gravity-floor.json as its
 // height above the taskbar floor. The shelf is one-way: it only catches a pet
 // coming down onto it, and below it the pet falls to the taskbar. The same
-// file keeps the on/off switch from the "Gravidade" menu (on by default).
+// file keeps the on/off switch from the Gravity menu (on by default).
 //
 // advanceThrow, the wall pose and the release rules of measureReleaseVelocity
 // are adapted from VS Code's chat pet (src/vs/workbench/contrib/chat/browser/widget/
@@ -22,6 +22,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { createTranslator } = require("./i18n");
 
 const GRAVITY_PX_PER_S2 = 2800;
 const MAX_FALL_SPEED_PX_PER_S = 2400;
@@ -186,6 +187,8 @@ module.exports = function initGravity(ctx, options = {}) {
   const getCursorPoint = options.getCursorPoint || electronCursorPoint;
   // Spin in degrees to the pet window, which rotates the drawing.
   const setRotation = options.setRotation || (() => {});
+  // Menu labels in the app's language; English when no translator is given.
+  const translate = options.t || createTranslator(() => "en");
   const saved = loadState();
   let enabled = saved.enabled !== false;
   let floors = saved.floors;
@@ -508,13 +511,13 @@ module.exports = function initGravity(ctx, options = {}) {
 
   function buildMenuItem() {
     return {
-      label: "Gravidade",
+      label: translate("gravity"),
       submenu: [
-        { label: "Queda ao soltar", type: "checkbox", checked: enabled, click: () => setEnabled(!enabled) },
+        { label: translate("gravityFallWhenReleased"), type: "checkbox", checked: enabled, click: () => setEnabled(!enabled) },
         { type: "separator" },
-        { label: "Segure Shift ao soltar para marcar o chão", enabled: false },
+        { label: translate("gravitySetFloorHint"), enabled: false },
         {
-          label: "Voltar para a barra de tarefas",
+          label: translate("gravityBackToTaskbar"),
           enabled: enabled && hasCustomFloor(),
           click: () => resetFloor(),
         },

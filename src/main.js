@@ -6109,6 +6109,7 @@ const _roam = require("./roam")(_roamCtx);
 // Gravity: the fall reuses roam's window context.
 const _gravity = require("./gravity")(_roamCtx, {
   setRotation: (degrees) => sendToRenderer("gravity-rotation", degrees),
+  t: (key) => translate(key),
 });
 // #810: resolve the fence's initial status right away so the first roam
 // round doesn't have to hold on an UNKNOWN state (get() === null) when a
