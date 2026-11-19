@@ -1397,6 +1397,84 @@ describe("hidden pet: roam holds still", () => {
   });
 });
 
+describe("gravity fall: roam holds still", () => {
+  beforeEach(() => {
+    mock.method(Math, "random", () => 0.9);
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  });
+
+  afterEach(() => {
+    mock.timers.reset();
+    mock.reset();
+  });
+
+  it("gravity fall: does not start a walk while the pet falls and keeps the consumed 4s phase", () => {
+    let falling = false;
+    const ctx = makeCtx({ isGravityFalling: () => falling });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick(); // schedules the first 8s timer and consumes firstRoam
+
+    falling = true;
+    for (let elapsed = 0; elapsed < 9000; elapsed += 1000) {
+      roam.tick();
+      mock.timers.tick(1000);
+    }
+    assert.deepStrictEqual(ctx._stateLog, []);
+    assert.deepStrictEqual(ctx._appliedBounds, []);
+
+    falling = false;
+    roam.tick();
+    mock.timers.tick(3999);
+    assert.strictEqual(ctx.getCurrentState(), "idle");
+    mock.timers.tick(1);
+    assert.strictEqual(ctx.getCurrentState(), "roam");
+  });
+
+  it("gravity fall: stops an active walk on the next frame, before it writes again", () => {
+    let falling = false;
+    let releases = 0;
+    const ctx = makeCtx({
+      isGravityFalling: () => falling,
+      releaseReconcileProtection: () => { releases++; },
+    });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(16);
+    assert.strictEqual(roam.isRoamAnimating(), true);
+    const writes = ctx._appliedBounds.length;
+
+    falling = true; // the menu can start a fall while the pet walks
+    mock.timers.tick(16);
+    assert.strictEqual(roam.isRoamAnimating(), false);
+    assert.strictEqual(ctx.getCurrentState(), "idle");
+    assert.strictEqual(releases, 1);
+    mock.timers.tick(1000);
+    assert.strictEqual(ctx._appliedBounds.length, writes, "only the fall moves the pet now");
+
+    falling = false;
+    roam.tick();
+    mock.timers.tick(3999);
+    assert.strictEqual(ctx.getCurrentState(), "idle");
+    mock.timers.tick(1);
+    assert.strictEqual(ctx.getCurrentState(), "roam");
+  });
+
+  it("gravity fall: a queued walk rechecks the fall when its timer fires", () => {
+    let falling = false;
+    const ctx = makeCtx({ isGravityFalling: () => falling });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    falling = true; // the fall starts after the walk was queued, with no tick in between
+    mock.timers.tick(8000);
+    assert.deepStrictEqual(ctx._stateLog, []);
+    assert.deepStrictEqual(ctx._appliedBounds, []);
+  });
+});
+
 describe("roam pauses during settings size preview", () => {
   beforeEach(() => {
     mock.method(Math, "random", () => 0.9);

@@ -58,6 +58,15 @@ module.exports = function initRoam(ctx) {
     );
   }
 
+  // A gravity fall (src/gravity.js) moves the window until the pet lands;
+  // roam holds still meanwhile, as during a drag.
+  function isGravityFalling() {
+    return !!(
+      typeof ctx.isGravityFalling === "function"
+      && ctx.isGravityFalling()
+    );
+  }
+
   // Issue #690 plan §4.3.10's roam protection-period release point. Roam's
   // per-frame applyPetWindowBounds() (ROAM_FRAME_MS=16) is a continuous
   // native-write period the reconcile state machine must not fight — every
@@ -73,6 +82,7 @@ module.exports = function initRoam(ctx) {
   function isRoamAllowed() {
     if (!enabled) return false;
     if (ctx.dragLocked) return false;
+    if (isGravityFalling()) return false;
     if (ctx.getMiniMode && ctx.getMiniMode()) return false;
     const state = ctx.getCurrentState ? ctx.getCurrentState() : "idle";
     // Allow roaming when idle (about to start) or already roaming (mid-animation)
@@ -573,9 +583,10 @@ module.exports = function initRoam(ctx) {
       // Re-check state on every frame: if the pet is no longer idle/roam (e.g. a
       // working/notification event arrived), stop the animation immediately.
       if (!isRoamAllowed()) {
-        // A drag only pauses the current roam phase; other gates still mean the
-        // pet left normal idle eligibility and reset the next wait to 8s.
-        if (hasPermissionBubbleHold() || !ctx.dragLocked) firstRoam = true;
+        // A drag (or a gravity fall) only pauses the current roam phase; other
+        // gates still mean the pet left normal idle eligibility and reset the
+        // next wait to 8s.
+        if (hasPermissionBubbleHold() || !(ctx.dragLocked || isGravityFalling())) firstRoam = true;
         // cancelRoam also restores "idle" when the state is still "roam" —
         // gates with no incoming state of their own (IME editing #640, mini
         // mode) would otherwise strand the pet frozen in its walk pose.
@@ -726,9 +737,10 @@ module.exports = function initRoam(ctx) {
   function tick() {
     if (!enabled) return;
     if (!isRoamAllowed()) {
-      // Preserve the already-consumed 4s/8s phase while drag owns movement.
-      // Existing non-drag gates still reset the next idle entry to 8s.
-      if (hasPermissionBubbleHold() || !ctx.dragLocked) firstRoam = true;
+      // Preserve the already-consumed 4s/8s phase while drag (or a gravity
+      // fall) owns movement. Existing non-drag gates still reset the next idle
+      // entry to 8s.
+      if (hasPermissionBubbleHold() || !(ctx.dragLocked || isGravityFalling())) firstRoam = true;
       cancelRoam();
       return;
     }
