@@ -215,13 +215,13 @@ test("Shift on release at the taskbar clears the shelf", () => {
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(floorFile, "utf8")).floors, {});
 });
 
-test("the back-to-taskbar menu item clears the shelf and the pet on it falls", async () => {
+test("the reset-floor menu item clears the shelf and the pet on it falls", async () => {
   const floorFile = tempFloorFile();
   const shelfY = FLOOR_Y - 300;
   const ctx = makeCtx(shelfY);
   const gravity = makeGravity(ctx, floorFile);
   gravity.setFloorHere();
-  const reset = (g) => g.buildMenuItem().submenu.find((i) => i.label === i18n.en.gravityBackToTaskbar);
+  const reset = (g) => g.buildMenuItem().submenu.find((i) => i.label === i18n.en.gravityResetFloor);
   assert.strictEqual(reset(gravity).enabled, true);
   const landed = new Promise((resolve) => gravity.setFallEndHandler((value) => resolve(value)));
   reset(gravity).click();
@@ -232,7 +232,7 @@ test("the back-to-taskbar menu item clears the shelf and the pet on it falls", a
 
 test("the menu is translated into every supported language, English by default", () => {
   const labels = (item) => [item.label, ...item.submenu.filter((i) => i.type !== "separator").map((i) => i.label)];
-  const keys = ["gravity", "gravityFallWhenReleased", "gravitySetFloorHint", "gravityBackToTaskbar"];
+  const keys = ["gravity", "gravityFallWhenReleased", "gravitySetFloorHint", "gravityResetFloor"];
   assert.deepStrictEqual(labels(makeGravity(makeCtx(100)).buildMenuItem()), keys.map((key) => i18n.en[key]));
   for (const lang of SUPPORTED_LANGS) {
     const gravity = initGravity(makeCtx(100), {

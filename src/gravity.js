@@ -517,7 +517,7 @@ module.exports = function initGravity(ctx, options = {}) {
         { type: "separator" },
         { label: translate("gravitySetFloorHint"), enabled: false },
         {
-          label: translate("gravityBackToTaskbar"),
+          label: translate("gravityResetFloor"),
           enabled: enabled && hasCustomFloor(),
           click: () => resetFloor(),
         },
