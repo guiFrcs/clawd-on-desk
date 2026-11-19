@@ -1655,6 +1655,73 @@ function getAssetUrl(file) {
 // --- IPC-triggered reactions (from hit window via main relay) ---
 window.electronAPI.onStartDragReaction((requestOrDirection, legacyDirection) => startDragReaction(requestOrDirection, legacyDirection));
 window.electronAPI.onEndDragReaction(() => endDragReaction());
+
+// Gravity: squash on landing, scaled by the impact
+// intensity (0..1) and back to normal in 200-360 ms, and the spin while
+// thrown. Only #pet-motion-stage's `scale` and `rotate`: roam's bob animates
+// its `translate`, and the mini-left mirror lives on #pet-facing-stage.
+let gravityLandAnimation = null;
+function playGravityLandSquash(intensity) {
+  if (!(intensity > 0)) return;
+  if (dndEnabled || !motionStage || typeof motionStage.animate !== "function") return;
+  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  if (gravityLandAnimation) gravityLandAnimation.cancel();
+  // Pivot on the feet line so the pet squashes onto the floor, not toward its middle.
+  const feetFromBottom = _layout && _layout.baselineBottomRatio != null ? _layout.baselineBottomRatio : 0.05;
+  motionStage.style.transformOrigin = `50% ${(1 - feetFromBottom) * 100}%`;
+  const squash = (x, y, offset) => ({
+    scale: `${1 + (x - 1) * intensity} ${1 + (y - 1) * intensity}`,
+    ...(offset != null ? { offset } : {}),
+  });
+  const animation = motionStage.animate([
+    squash(1, 1),
+    squash(1.35, 0.45, 0.1),
+    squash(1.25, 0.6, 0.35),
+    squash(1.08, 0.88, 0.65),
+    squash(0.97, 1.04, 0.85),
+    squash(1, 1),
+  ], { duration: Math.round(200 + 160 * intensity) });
+  gravityLandAnimation = animation;
+  const done = () => {
+    if (gravityLandAnimation !== animation) return;
+    gravityLandAnimation = null;
+    // A new throw may already be spinning around its own pivot.
+    if (!motionStage.style.rotate) motionStage.style.transformOrigin = "";
+  };
+  animation.onfinish = done;
+  animation.oncancel = done;
+}
+if (typeof window.electronAPI.onGravityLanded === "function") {
+  window.electronAPI.onGravityLanded((intensity) => playGravityLandSquash(intensity));
+}
+
+// The spin pivots on the center of the theme's body box (layout.contentBox),
+// placed like applyNormalizedLayoutStyle does; it fits the window at any angle.
+function gravityBodyCenterOrigin() {
+  const box = _layout && _layout.contentBox;
+  if (!box) return "50% 50%";
+  const unit = (_layout.visibleHeightRatio || 0.58) / box.height;
+  const centerX = _layout.centerX != null ? _layout.centerX : box.x + box.width / 2;
+  const baselineY = _layout.baselineY != null ? _layout.baselineY : box.y + box.height;
+  const x = (_layout.centerXRatio != null ? _layout.centerXRatio : 0.5) + (box.x + box.width / 2 - centerX) * unit;
+  const y = 1 - (_layout.baselineBottomRatio != null ? _layout.baselineBottomRatio : 0.05)
+    - (baselineY - (box.y + box.height / 2)) * unit;
+  return `${x * 100}% calc(${y * 100}% - ${_viewportOffsetY || 0}px)`;
+}
+function applyGravityRotation(degrees) {
+  if (!motionStage) return;
+  const reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (!degrees || reduced) {
+    motionStage.style.rotate = "";
+    if (!gravityLandAnimation) motionStage.style.transformOrigin = "";
+    return;
+  }
+  motionStage.style.transformOrigin = gravityBodyCenterOrigin();
+  motionStage.style.rotate = `${degrees}deg`;
+}
+if (typeof window.electronAPI.onGravityRotation === "function") {
+  window.electronAPI.onGravityRotation((degrees) => applyGravityRotation(degrees));
+}
 window.electronAPI.onPlayClickReaction((svg, duration, options) => playReaction(svg, duration, options));
 // Settings cancels its own reaction preview when it closes; without this the
 // pet would hold the reaction visual, and its paused cursor polling, until the

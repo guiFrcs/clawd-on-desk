@@ -604,6 +604,11 @@ module.exports = function initMenu(ctx) {
     // are set-once OS-integration prefs and live in the tray menu + Settings
     // instead. On a single display this group is empty and joinGroups drops it.
     const displayGroup = [];
+    // Gravity submenu: fall on/off and floor.
+    if (typeof ctx.getGravityMenuItem === "function" && !ctx.getMiniMode()) {
+      const gravityItem = ctx.getGravityMenuItem();
+      if (gravityItem) displayGroup.push(gravityItem);
+    }
     const displays = screen.getAllDisplays();
     if (displays.length > 1 && !ctx.getMiniMode()) {
       displayGroup.push({

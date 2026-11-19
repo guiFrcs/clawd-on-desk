@@ -56,6 +56,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Reaction control (from main, relayed from hit window)
   onStartDragReaction: (cb) => ipcRenderer.on("start-drag-reaction", (_, requestOrDirection, legacyDirection) => cb(requestOrDirection, legacyDirection)),
   onEndDragReaction: (cb) => ipcRenderer.on("end-drag-reaction", () => cb()),
+  onGravityLanded: (cb) => ipcRenderer.on("gravity-landed", (_, intensity) => cb(
+    Number.isFinite(intensity) ? Math.min(1, Math.max(0, intensity)) : 1
+  )),
+  onGravityRotation: (cb) => ipcRenderer.on("gravity-rotation", (_, degrees) => cb(
+    Number.isFinite(degrees) ? degrees : 0
+  )),
   onPlayClickReaction: (cb) => ipcRenderer.on("play-click-reaction", (_, requestOrSvg, duration, options) => cb(requestOrSvg, duration, options)),
   onCancelClickReaction: (cb) => ipcRenderer.on("cancel-click-reaction", () => cb()),
   onPlayTestReaction: (cb) => ipcRenderer.on("play-test-reaction", (_, result) => {
