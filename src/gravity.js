@@ -249,15 +249,15 @@ module.exports = function initGravity(ctx, options = {}) {
   }
 
   // Floors, walls and top of the display where the pet is, all from the rest
-  // clamp it already obeys (as if dragged against each edge). shelfY is null
-  // without a custom floor there.
+  // clamp it already obeys, edge pinning included (as if dragged against each
+  // edge). shelfY is null without a custom floor there.
   function resolveArea(bounds) {
     const { width, height } = frozenSize(bounds);
     const cx = bounds.x + width / 2;
     const cy = bounds.y + height / 2;
     const wa = ctx.getNearestWorkArea(cx, cy);
     if (!wa) return null;
-    const rest = (x, y) => ctx.clampToScreenVisual(x, y, width, height, { workArea: wa, allowEdgePinning: false });
+    const rest = (x, y) => ctx.clampToScreenVisual(x, y, width, height, { workArea: wa });
     const lowest = rest(bounds.x, wa.y + wa.height);
     const highest = rest(bounds.x, wa.y - height);
     const leftmost = rest(wa.x - width, bounds.y);

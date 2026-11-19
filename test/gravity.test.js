@@ -142,13 +142,14 @@ test("squash scales with the drop height: light at 100 px, none at 30 px", async
   assert.strictEqual(tiny.info.intensity, 0);
 });
 
-test("uses the work area of the display where it was dropped, without edge pinning", () => {
+test("uses the work area of the display where it was dropped and the user's edge pinning", () => {
   const ctx = makeCtx(100);
   const gravity = makeGravity(ctx);
   gravity.startFall(() => {});
   gravity.cancel();
   assert.strictEqual(ctx.clampOptions.workArea, WORK_AREA);
-  assert.strictEqual(ctx.clampOptions.allowEdgePinning, false);
+  // No override: the rest clamp applies "Allow pinning to screen edges" itself.
+  assert.ok(!("allowEdgePinning" in ctx.clampOptions), "the floor follows the edge pinning setting");
 });
 
 test("already on the floor: does not fall", () => {
