@@ -82,6 +82,7 @@ function registerPetInteractionIpc(options = {}) {
   // Gravity: a drag released in mid-air falls to the floor.
   const startGravityFall = options.startGravityFall || (() => false);
   const beginGravityDrag = options.beginGravityDrag || (() => {});
+  const recordGravityDragSample = options.recordGravityDragSample || (() => {});
   const isGravityFalling = options.isGravityFalling || (() => false);
   const setGravityFloorHere = options.setGravityFloorHere || (() => false);
   const setGravityFallEndHandler = options.setGravityFallEndHandler || (() => {});
@@ -119,7 +120,11 @@ function registerPetInteractionIpc(options = {}) {
   }
 
   on("show-context-menu", showContextMenu);
-  on("drag-move", () => moveWindowForDrag());
+  on("drag-move", () => {
+    moveWindowForDrag();
+    // Positions during the drag measure the throw on release.
+    recordGravityDragSample();
+  });
   on("pet-visual-ready", (event) => recoverVisiblePetAfterRendererLoad(event));
   on("pet-visual-settled", (event, payload) => settleVisual(event, payload));
 

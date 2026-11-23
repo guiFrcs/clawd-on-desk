@@ -5784,6 +5784,7 @@ function createWindow() {
     cancelRoam: () => _roam.cancelRoam(),
     startGravityFall: (onEnd) => _gravity.release(onEnd),
     beginGravityDrag: () => _gravity.beginDrag(),
+    recordGravityDragSample: () => _gravity.recordDragSample(),
     isGravityFalling: () => _gravity.isFalling(),
     setGravityFloorHere: () => _gravity.setFloorHere(),
     setGravityFallEndHandler: (handler) => _gravity.setFallEndHandler(handler),
@@ -6149,6 +6150,7 @@ const _roamCtx = {
 const _roam = require("./roam")(_roamCtx);
 // Gravity: the fall reuses roam's window context.
 const _gravity = require("./gravity")(_roamCtx, {
+  setRotation: (degrees) => sendToRenderer("gravity-rotation", degrees),
   t: (key) => translate(key),
 });
 // #810: resolve the fence's initial status right away so the first roam
