@@ -607,7 +607,13 @@ function formatTokenCount(value) {
 
 function contextUsageText(session) {
   const usage = session && session.contextUsage;
-  if (!usage || !Number.isFinite(Number(usage.used))) return "";
+  if (!usage) return "";
+  if (!Number.isFinite(Number(usage.used))) {
+    // Percent-only usage (token counts unavailable): never claim "0 tokens".
+    return Number.isFinite(Number(usage.percent))
+      ? `${t("dashboardContextUsage")}: ${Math.max(0, Math.min(100, Math.round(Number(usage.percent))))}%`
+      : "";
+  }
   const used = formatTokenCount(usage.used);
   if (Number.isFinite(Number(usage.limit))) {
     const limit = formatTokenCount(usage.limit);
@@ -863,8 +869,17 @@ function formatResetDate(resetAt) {
 function buildQuotaSourceHeader(sourceEntry, providerEntry, baseLabel, providerKey) {
   const parts = [];
   const multiSource = sourceEntry.multiSource === true;
-  if (multiSource) {
-    parts.push(sourceEntry.host || t("dashboardQuotaSourceLocal"));
+  // Extra local Codex subscriptions are labeled even if they are the only
+  // currently reporting source. A lone default source stays compact.
+  const namedLocalCodex = typeof sourceEntry.sourceKey === "string"
+    && sourceEntry.sourceKey.startsWith("codex-profile:");
+  if (multiSource || namedLocalCodex) {
+    let localLabel = t("dashboardQuotaSourceLocal");
+    if (sourceEntry.hasExtraCodexProfile) {
+      if (providerKey === "codexQuota") localLabel = t("dashboardQuotaSectionCodex");
+      if (providerKey === "codexSparkQuota") localLabel = t("dashboardQuotaSectionCodexSpark");
+    }
+    parts.push(sourceEntry.host || localLabel);
   }
   if (baseLabel) parts.push(baseLabel);
   // lastSeenAt (last confirmation), not updatedAt (last value change): a
@@ -1010,7 +1025,9 @@ function renderQuotaSummary(snapshot) {
   kimiQuotaRefreshFeedbackEl = null;
 
   const multiSource = accountQuota.length > 1;
-  const sources = accountQuota.map((entry) => ({ ...entry, multiSource }));
+  const hasExtraCodexProfile = accountQuota.some((source) => typeof source.sourceKey === "string"
+    && source.sourceKey.startsWith("codex-profile:"));
+  const sources = accountQuota.map((entry) => ({ ...entry, multiSource, hasExtraCodexProfile }));
 
   const sections = [];
 
@@ -1173,6 +1190,7 @@ function beginTitleEdit(session) {
     sessionId: session.id,
     rawSessionId: session.rawSessionId || session.id,
     profileId: session.profileId || "local",
+    codexProfileId: session.codexProfileId || null,
     agentId: session.agentId || null,
     host: session.host || null,
     cwd: session.cwd || "",
@@ -1205,6 +1223,7 @@ async function commitTitleEdit() {
       sessionId: edit.sessionId,
       rawSessionId: edit.rawSessionId,
       profileId: edit.profileId,
+      codexProfileId: edit.codexProfileId,
       cwd: edit.cwd,
       alias: edit.draft,
     });
@@ -1287,6 +1306,13 @@ function appendMeta(main, session, now) {
     profileBadge.title = session.claudeConfigDir
       ? `${t("sessionClaudeProfile")}: ${session.claudeConfigDir}`
       : t("sessionClaudeProfile");
+    meta.appendChild(profileBadge);
+  }
+  if (session.codexProfileLabel) {
+    meta.appendChild(document.createTextNode(" · "));
+    const profileBadge = document.createElement("span");
+    profileBadge.className = "source-badge codex-profile-badge";
+    profileBadge.textContent = session.codexProfileLabel;
     meta.appendChild(profileBadge);
   }
   meta.appendChild(document.createTextNode(" · "));
@@ -1487,7 +1513,9 @@ function createCard(session, now) {
     const button = document.createElement("button");
     button.type = "button";
     const focusTargetType = session.focusTarget && session.focusTarget.type;
-    button.textContent = focusTargetType === "codex-app"
+    button.textContent = focusTargetType === "codebuddy-ide"
+      ? t("dashboardOpenCodeBuddy")
+      : focusTargetType === "codex-app"
       ? t("dashboardOpenCodexApp")
       : focusTargetType === "codex-thread"
       ? t("dashboardOpenCodexSession")

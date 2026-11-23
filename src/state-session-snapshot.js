@@ -9,7 +9,7 @@ const { i18n } = require("./i18n");
 const { isCodexDesktopOriginator } = require("../hooks/codex-originator");
 const { sessionAliasKey } = require("./session-alias");
 const { getOpencodeAttachTarget } = require("./opencode-attach-target");
-const { getSessionFocusTarget } = require("./session-focus");
+const { getSessionFocusTarget, hasLinuxTabTarget } = require("./session-focus");
 const {
   buildLatestLocalCodexProcessIds,
   isSupersededLocalCodexProcessSession,
@@ -184,6 +184,7 @@ function getSessionAliasEntry(id, sessionLike, sessionAliases = {}) {
     {
       cwd: sessionLike && sessionLike.cwd,
       profileId: sessionLike && sessionLike.profileId,
+      codexProfileId: sessionLike && sessionLike.codexProfileId,
     }
   );
   if (scopedAliasKey && sessionAliases[scopedAliasKey]) return sessionAliases[scopedAliasKey];
@@ -194,6 +195,7 @@ function getSessionAliasEntry(id, sessionLike, sessionAliases = {}) {
     sessionLike && sessionLike.agentId,
     rawSessionId
   );
+  if (sessionLike && sessionLike.codexProfileId && sessionLike.codexProfileId !== "default") return null;
   if (legacyAliasKey && legacyAliasKey !== scopedAliasKey) return sessionAliases[legacyAliasKey] || null;
   return legacyAliasKey ? sessionAliases[legacyAliasKey] : null;
 }
@@ -202,7 +204,8 @@ function getEffectiveSessionTitle(id, sessionLike, options = {}) {
   const readThreadName = typeof options.readCodexThreadName === "function"
     ? options.readCodexThreadName
     : readCodexThreadName;
-  if (sessionLike && sessionLike.agentId === "codex" && !sessionLike.host) {
+  if (sessionLike && sessionLike.agentId === "codex" && !sessionLike.host
+    && (!sessionLike.codexProfileId || sessionLike.codexProfileId === "default")) {
     const threadName = normalizeTitle(readThreadName((sessionLike && sessionLike.rawSessionId) || id));
     if (threadName) return threadName;
   }
@@ -443,7 +446,7 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     && session.platform !== "wsl"
     && (session.profileId || "local") === "local";
   const localPresentation = isLocalSession
-    && (agentId === "codex" || isLocalApprovalReminderSession(session));
+    && (agentId === "codex" || agentId === "qoder" || isLocalApprovalReminderSession(session));
   const canPresent = isLocalSession && typeof options.getSessionPresentation === "function";
   let presentation = (localPresentation || isTerminalWaitSession(session))
     && typeof options.getSessionPresentation === "function"
@@ -458,7 +461,8 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     const candidate = options.getSessionPresentation(id);
     if (candidate && candidate.pendingAttention === true) presentation = { pendingAttention: true };
   }
-  const activeSubagentCount = agentId === "codex" && Number.isSafeInteger(presentation?.activeSubagentCount)
+  const activeSubagentCount = (agentId === "codex" || agentId === "qoder")
+    && Number.isSafeInteger(presentation?.activeSubagentCount)
     && presentation.activeSubagentCount > 0 && presentation.activeSubagentCount <= 200
     ? presentation.activeSubagentCount : 0;
   const pendingAttention = presentation?.pendingAttention === true;
@@ -525,7 +529,13 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     // terminal-tab switch lands after the window focus is confirmed, which
     // src/telegram-direct-send.js has to wait out before pasting.
     orcaPaneKey: (session && session.orcaPaneKey) || null,
+    // Recalculation only needs to know a pane/tab can be selected; raw targets
+    // stay out of the snapshot.
+    hasPaneFocusTarget: hasLinuxTabTarget(session, {
+      osPlatform: options.focusHostPlatform || options.osPlatform,
+    }),
     canFocus: focusTarget.canFocus === true,
+    focusUnavailableReason: focusTarget.reason || null,
     canOpenInTerminal: !!getOpencodeAttachTarget(session, options.platform || process.platform),
     focusTarget: focusTarget.type ? { type: focusTarget.type, url: focusTarget.url || null } : null,
     host: (session && session.host) || null,
@@ -541,10 +551,17 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     provider: (session && session.provider) || null,
     codexOriginator: (session && session.codexOriginator) || null,
     codexSource: (session && session.codexSource) || null,
+    ...(session && session.codexProfileId && session.codexProfileId !== "default"
+      ? {
+        codexProfileId: session.codexProfileId,
+        codexProfileLabel: session.codexProfileLabel || session.codexProfileId,
+      }
+      : {}),
     ...(planProgress ? { planProgress } : {}),
     ...(session && typeof session.codexClientEphemeral === "boolean"
       ? { codexClientEphemeral: session.codexClientEphemeral } : {}),
     dshCarrier: (session && session.dshCarrier) || null,
+    codebuddyClient: (session && session.codebuddyClient) || null,
     contextUsage: snapshotContextUsage(session),
     assistantLastOutput: (session && typeof session.assistantLastOutput === "string")
       ? session.assistantLastOutput
@@ -581,13 +598,16 @@ function snapshotContextUsage(session) {
   const usage = session && session.contextUsage;
   if (!usage || typeof usage !== "object") return null;
   const used = Number(usage.used);
-  if (!Number.isFinite(used) || used < 0) return null;
-  const out = { used };
+  const usedKnown = Number.isFinite(used) && used >= 0;
+  const percent = Number(usage.percent);
+  const percentKnown = Number.isFinite(percent);
+  if (!usedKnown && !percentKnown) return null;
+  const out = {};
+  if (usedKnown) out.used = used;
   const limit = Number(usage.limit);
   if (Number.isFinite(limit) && limit > 0) out.limit = limit;
-  const percent = Number(usage.percent);
-  if (Number.isFinite(percent)) out.percent = Math.max(0, Math.min(100, Math.round(percent)));
-  if (usage.source === "claude" || usage.source === "codex" || usage.source === "antigravity" || usage.source === "opencode" || usage.source === "workbuddy") out.source = usage.source;
+  if (percentKnown) out.percent = Math.max(0, Math.min(100, Math.round(percent)));
+  if (usage.source === "claude" || usage.source === "codex" || usage.source === "antigravity" || usage.source === "opencode" || usage.source === "workbuddy" || usage.source === "qoder") out.source = usage.source;
   return out;
 }
 
@@ -603,7 +623,8 @@ function buildSessionSnapshot(sessions, options = {}) {
   if (typeof readThreadName !== "function") {
     const localCodexSessionIds = [];
     for (const [id, session] of normalizeSessionsIterable(sessions)) {
-      if (session && session.agentId === "codex" && !session.host) {
+      if (session && session.agentId === "codex" && !session.host
+        && (!session.codexProfileId || session.codexProfileId === "default")) {
         localCodexSessionIds.push(session.rawSessionId || id);
       }
     }
@@ -720,6 +741,7 @@ function getActiveSessionAliasKeys(sessions) {
       {
         cwd: session && session.cwd,
         profileId: session && session.profileId,
+        codexProfileId: session && session.codexProfileId,
       }
     );
     if (key) keys.add(key);
@@ -743,6 +765,7 @@ function sessionSnapshotSignature(snapshot) {
     // that confirms unchanged numbers — its once-a-minute move must reach
     // the renderers, so it must move the signature too.
     accountQuota: (snapshot.accountQuota || []).map((entry) => ({
+      sourceKey: entry.sourceKey === undefined ? null : entry.sourceKey,
       host: entry.host,
       antigravityQuota: entry.antigravityQuota
         ? { group: entry.antigravityQuota.group, lastSeenAt: entry.antigravityQuota.lastSeenAt }
@@ -798,9 +821,14 @@ function sessionSnapshotSignature(snapshot) {
       provider: entry.provider,
       codexOriginator: entry.codexOriginator,
       codexSource: entry.codexSource,
+      ...(entry.codexProfileId ? {
+        codexProfileId: entry.codexProfileId,
+        codexProfileLabel: entry.codexProfileLabel,
+      } : {}),
       planProgress: entry.planProgress || null,
       codexClientEphemeral: entry.codexClientEphemeral,
       dshCarrier: entry.dshCarrier,
+      codebuddyClient: entry.codebuddyClient,
       contextUsage: entry.contextUsage,
       assistantLastOutput: entry.assistantLastOutput,
       assistantLastOutputTruncated: !!entry.assistantLastOutputTruncated,

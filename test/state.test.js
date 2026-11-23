@@ -14,7 +14,7 @@ const _cloudlingTheme = themeLoader.loadTheme("cloudling");
 const { createTranslator } = require("../src/i18n");
 const { makeSessionKey, resolveSessionIdentity } = require("../src/session-key");
 const { isSessionInProgress, sessionSnapshotSignature } = require("../src/state-session-snapshot");
-const { isFocusableLocalHudSession } = require("../src/session-focus");
+const { getSessionFocusTarget, isFocusableLocalHudSession } = require("../src/session-focus");
 const { countLiveSubagents } = require("../src/state-visual-resolver");
 const { resolveIdleVisualChoice } = require("../src/idle-visual");
 
@@ -69,6 +69,72 @@ function makePidKill(alivePids) {
 function cloneTheme(theme) {
   return JSON.parse(JSON.stringify(theme));
 }
+
+describe("PR #1386 follow-up: CodeBuddy IDE session metadata", () => {
+  let api;
+  beforeEach(() => { api = require("../src/state")(makeCtx()); });
+  afterEach(() => api.cleanup());
+
+  it("PR #1386 follow-up: keeps the first prompt title and the IDE client across later events", () => {
+    api.updateSession("codebuddy:s1", "thinking", "UserPromptSubmit", {
+      agentId: "codebuddy", sourcePid: 12089, cwd: "/tmp/project",
+      codebuddyClient: "CodeBuddyIDE",
+      sessionTitle: "分辨率分别是？", sessionTitleFromPrompt: true,
+    });
+    api.updateSession("codebuddy:s1", "thinking", "UserPromptSubmit", {
+      agentId: "codebuddy", sourcePid: 12089, cwd: "/tmp/project",
+      sessionTitle: "第二个标题", sessionTitleFromPrompt: true,
+    });
+    api.updateSession("codebuddy:s1", "working", "PreToolUse", {
+      agentId: "codebuddy", sourcePid: 12089, cwd: "/tmp/project",
+    });
+    const session = api.sessions.get("codebuddy:s1");
+    assert.strictEqual(session.sessionTitle, "分辨率分别是？");
+    assert.strictEqual(session.sessionTitleFromPrompt, true);
+    assert.strictEqual(session.codebuddyClient, "CodeBuddyIDE");
+  });
+
+  it("PR #1407 follow-up: keeps a CodeBuddy IDE row after the harness exits and refreshes identity later", () => {
+    const alivePids = new Set([71001]);
+    const localApi = require("../src/state")(makeCtx({
+      processKill: makePidKill(alivePids),
+    }));
+    try {
+      localApi.updateSession("codebuddy:s2", "working", "PreToolUse", {
+        agentId: "codebuddy", codebuddyClient: "CodeBuddyIDE",
+        sourcePid: 71001, agentPid: 71002, pidChain: [71003, 71002],
+        cwd: "/tmp/project",
+      });
+      localApi.cleanStaleSessions();
+      assert.ok(localApi.sessions.has("codebuddy:s2"), "a live IDE source must keep the row");
+
+      localApi.updateSession("codebuddy:s2", "thinking", "UserPromptSubmit", {
+        agentId: "codebuddy", codebuddyClient: "CodeBuddyIDE", cwd: "/tmp/project",
+        sessionTitle: "next turn", sessionTitleFromPrompt: true,
+      });
+      let session = localApi.sessions.get("codebuddy:s2");
+      assert.strictEqual(session.sourcePid, 71001);
+      assert.deepStrictEqual(
+        getSessionFocusTarget({ ...session, id: "codebuddy:s2" }, { osPlatform: "win32" }),
+        { canFocus: true, type: "codebuddy-ide", url: null }
+      );
+
+      alivePids.add(71004);
+      alivePids.add(71005);
+      alivePids.add(71006);
+      localApi.updateSession("codebuddy:s2", "working", "PreToolUse", {
+        agentId: "codebuddy", codebuddyClient: "CodeBuddyIDE",
+        sourcePid: 71006, agentPid: 71004, pidChain: [71005, 71004], cwd: "/tmp/project",
+      });
+      session = localApi.sessions.get("codebuddy:s2");
+      assert.strictEqual(session.sourcePid, 71006);
+      assert.strictEqual(session.agentPid, 71004);
+      assert.deepStrictEqual(session.pidChain, [71005, 71004]);
+    } finally {
+      localApi.cleanup();
+    }
+  });
+});
 
 describe("Claude correlated batch phase", () => {
   let api;
@@ -3045,6 +3111,65 @@ describe("updateSession()", () => {
     });
 
     assert.strictEqual(api.sessions.get("c1").pidReachable, true);
+  });
+
+  it("stores and preserves labels for additional local Codex profiles only", () => {
+    api.updateSession("company-session", "working", "UserPromptSubmit", {
+      agentId: "codex",
+      profileId: "local",
+      rawSessionId: "codex:shared",
+      codexProfileId: "company",
+      codexProfileLabel: "Company",
+    });
+    const company = api.sessions.get("company-session");
+    assert.equal(company.codexProfileId, "company");
+    assert.equal(company.codexProfileLabel, "Company");
+
+    api.updateSession("company-session", "working", "PreToolUse", {
+      agentId: "codex",
+      profileId: "local",
+      rawSessionId: "codex:shared",
+    });
+    assert.equal(company.codexProfileId, "company");
+    assert.equal(company.codexProfileLabel, "Company");
+
+    api.updateSession("claude-session", "working", "PreToolUse", {
+      agentId: "claude-code",
+      profileId: "local",
+      codexProfileId: "company",
+      codexProfileLabel: "Company",
+    });
+    assert.equal(api.sessions.get("claude-session").codexProfileId, undefined);
+  });
+
+  it("passes distinct ephemeral recap identities for identical Codex tool calls across local profiles", () => {
+    const { createMemoryRecapSink } = require("../src/recap-sink");
+    const recapSink = createMemoryRecapSink({ captureEphemeralIdentity: true });
+    api.cleanup();
+    ctx = makeCtx({ recapSink });
+    api = require("../src/state")(ctx);
+    const rawSessionId = "codex:shared-recap-id";
+    const defaultSessionKey = makeSessionKey({ profileId: "local", rawSessionId });
+    const companySessionKey = makeSessionKey({
+      profileId: "local", rawSessionId: "codex-profile:company:" + rawSessionId,
+    });
+    for (const [sessionId, extra] of [
+      [defaultSessionKey, {}],
+      [companySessionKey, { codexProfileId: "company", codexProfileLabel: "Company" }],
+    ]) {
+      api.updateSession(sessionId, "working", "PreToolUse", {
+        agentId: "codex",
+        profileId: "local",
+        rawSessionId,
+        toolUseId: "reused-tool-call",
+        ...extra,
+      });
+    }
+    const identities = recapSink.identitySnapshot().filter((entry) =>
+      entry.dedupeId === "tool-call:reused-tool-call");
+    assert.equal(identities.length, 2);
+    assert.deepStrictEqual(identities.map((entry) => entry.scopeId), ["local", "codex-profile:company"]);
+    assert.deepStrictEqual(identities.map((entry) => entry.sessionId), [rawSessionId, rawSessionId]);
   });
 
   it("attention is oneshot — stored as idle in session", () => {

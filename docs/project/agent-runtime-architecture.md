@@ -383,6 +383,8 @@ CodeBuddy 状态同步（Claude Code 兼容 hook，command）：
     → 同上状态机（agent_id: codebuddy）
   Hook 注册到 ~/.codebuddy/settings.json，格式与 Claude Code 完全兼容。
   command hook 对所有事件都输出 `{}`，不做工具或权限决定；阻塞式审批只走 PermissionRequest HTTP hook。
+  Windows 点击时从深层 agent-harness.exe 路径向上定位安装目录；harness 退出而 sourcePid 仍活时，
+  会话按普通会话超时退场，不立即删除。
 
 自定义 HTTP Agent（动态注册，state-only）：
   Settings 选择本机可执行文件
@@ -428,14 +430,16 @@ Qoder / Qoder CN hooks（同一个 `qoder` agent、state-only）：
 Qoder 会话标题（本机、state-only）：
   Hook 转发显式标题与 transcript 路径，保持 stdout 为 `{}` 和原生权限流程不变。
   `agent-runtime-main` 先接受生命周期，再让 `qoder-session-title` 对 SessionStart /
-  UserPromptSubmit / Stop 异步增量读取；工具、权限、通知事件不触发扫描，显式标题也不触发 I/O。
+  UserPromptSubmit / Stop 异步增量读取 JSONL；工具、权限、通知事件不触发 JSONL 扫描，显式标题也不触发 JSONL I/O。
   仅处理 enabled、本机且非 WSL 的 Qoder 会话，远端 profile / host 的路径不在本机读取。
   标题读取保持完整的顺序解析与 custom-title 优先级，不采用会遗漏中段改名的头尾采样。
   结果通过既有 `updateSessionMetadata` 扇出到共享 snapshot，不改活动时间、状态、recentEvents 或 recap。
   显式生命周期标题和 metadata-only 标题均同步记入 tracker；未读取/轮转的基线或已排队的旧扫描
   不覆盖显式标题，之后观察到的新原生标题记录才可替代它（两个来源没有可比较的原生时间戳）。
-  同 id 的 SessionStart 取消旧读取但保留显式标题；SessionEnd、禁用与退出完整清理缓存。
-  每个会话串行读取；完成时还需核对存活会话、
+  对 JSONL tracker，同 id 的 SessionStart 取消旧读取但保留显式标题；SessionEnd、禁用与退出完整清理缓存。
+  新版桌面端通过 `qoder-desktop-sessions` 只读查询两版 `main.sqlite` 中的标题、用量、委派与归档/删除状态。本机首个事件和 SessionStart 查库，未确认委派时在 Stop / Notification 前复查，轮询仅为到期条目开库。确认的委派子行会隐藏并把活动投到父行，父行的完成提示照常。
+  SQLite 在 hook 或轮询中确认委派、归档或删除并撤行时，会作废该会话未完成的 JSONL 标题扫描。
+  JSONL 按会话串行读取；完成时还需核对存活会话、
   本机身份、当前路径及标题，防止旧异步结果污染重开的会话。读取中断时逐 chunk 保持 offset 与 partial
   一致，重试可继续完整解析；FileHandle 始终在 finally 中关闭。
 
@@ -1018,6 +1022,7 @@ opencode、MiMo Code、OpenClaw、Hermes 和 DeepSeek Harness 是 plugin 形式�
 - CJS hook 脚本通过 `hooks/shared-process.js` 的 `createPidResolver()` 与 lifecycle context 遍历进程树定位终端应用 PID（Windows Terminal、VS Code、iTerm2 等）；opencode-family plugin 保留自己的内部 resolver
 - 不要用 `process.ppid` 做轻量替代：Claude Code / hook 进程链里它通常只是临时 shell PID，不稳定也不可持久化
 - 本机 Windows Codex Desktop 的 lifecycle context 会以已验证的 app-server `agentPid` 作为 `source_pid` 和 v2 cache 的 `stablePid`，避免 `SessionStart` 的短命 PowerShell wrapper 退出后让 cache-only prompt 丢失身份。Desktop 判定只认 `codex-originator.js` 的已知 originator；本机 Windows 无 transcript 的 ephemeral hook 缺少 originator/source 且不是 headless/subagent 时，可用同一 allowlist 验证 `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`，并上报 originator 供同进程多聊天去重与 server-side process routing 使用；显式 CLI / unknown originator 优先，环境变量不得把来源不明的 child permission 提升为交互式。WSL / interop / remote / headless 不走该偏好；其他 agent 和 Codex CLI 仍保持 terminal-first 与双 PID liveness，prompt / SessionEnd 永不补做快照，Stop 不删 cache。
+- 本机 Windows Claude 桌面版（仅 canonical `claude-code`、`CLAUDE_CODE_ENTRYPOINT=claude-desktop` 且非 headless）同样以 CLI `agentPid` 作为 `source_pid` 和新建 v2 cache 的 `stablePid`，其他 Claude 会话仍以终端优先。升级前留下的旧缓存命中时只修正上报的 `source_pid`，磁盘上的 `stablePid` 不改写；恢复租约在 source 移到 agent 后沿用 agent 的启动标识。HUD / Dashboard 聚焦这类会话时不使用存下的 WT 窗口句柄，由 CLI 进程链（以及已有的窗口缓存）找出 Claude 窗口。
 - official `SessionStart` payload 的 `source` 是生命周期原因，不是 session provenance：只有事件名精确为 `SessionStart` 且值精确为 `startup` / `resume` / `clear` / `compact` / `fork` 时，才不阻止上述 audited Desktop env 预热；该原因留在原 payload，不写入 `codex_source`。`session_meta.source` 始终是 provenance，显式 originator、未知/非字符串 source、headless/subagent 与 remote/WSL gate 不变；`PermissionRequest` 不获得该例外。五个值由 official [rust-v0.162.0-alpha.2 SessionStart source（commit 74e804d）](https://github.com/openai/codex/blob/74e804deeb1241d5fe699b31fb319f7d46454c42/codex-rs/hooks/src/events/session_start.rs) 的 enum 和 serializer 核实；[release hook reference](https://learn.chatgpt.com/docs/hooks#sessionstart) 目前仍列四个值，并说明 main schema 可能先于 release docs。
 - Windows shared resolver 的全量快照在 `Get-CimInstance Win32_Process` 用 server-side `-Property ProcessId,ParentProcessId,Name,CommandLine,CreationDate` 请求实际需要的属性，避免取回所有 CIM 属性后再丢弃。原 foreground interop、Windows Terminal HWND、`Select-Object` 和 UTC ticks `StartIdentity` 输出保留；noarg、CLI、其他 adapter 的 PID walk / shape / gates 不变。
 - Codex adapter 的 Windows 全量进程快照对普通事件使用共享 resolver 已有的 `windowsSnapshotTimeoutMs:5000`（上限 5 秒），`Interrupt` 保持 3000ms 以遵守其 upstream 3 秒外层 timeout；其他调用者的默认值仍为 3 秒。timeout 后保持无进程元数据，不重试、不伪造 PID。Windows `UserPromptSubmit` / `SessionEnd` 仍只读 cache，不增加快照。生命周期 source 误判和 fresh query 超时是独立故障：正确识别 `fork` 不能修复一次超时的预热，有界 timeout 也不保证查询必能完成。真实 HUD 首轮聚焦仍需 native hook 和 GUI 验证。

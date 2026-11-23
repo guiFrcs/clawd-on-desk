@@ -3,6 +3,7 @@ const { readCodexClientEphemeral } = require("./codex-session-persistence");
 
 const path = require("path");
 const { resolveSessionIdentity } = require("./session-key");
+const { codexProfileIdentity, resolveExtraCodexHookProfile } = require("./codex-profiles");
 const { normalizeOpencodeAttachUrl } = require("./opencode-attach-target");
 const {
   assessSessionAutomationIdentity,
@@ -351,6 +352,7 @@ function handleStatePost(req, res, options) {
       const trustedProfileId = remoteProfile && typeof remoteProfile.profileId === "string"
         ? remoteProfile.profileId
         : "local";
+      const codexProfile = resolveExtraCodexHookProfile(ctx, data, { agentId, remoteProfile, wslSourced });
       const sessionAutomationIdentity = assessSessionAutomationIdentity({
         agentId,
         channel: "state",
@@ -403,7 +405,9 @@ function handleStatePost(req, res, options) {
       // as `default` so Kiro's cwd-scoped aliases and existing UI contracts do
       // not acquire the internal namespace.
       if (!session_id) session_id = `${agentId}:default`;
-      const sessionIdentity = resolveSessionIdentity(session_id, trustedProfileId, "default");
+      const sessionIdentity = codexProfile
+        ? codexProfileIdentity(session_id, codexProfile, "default")
+        : resolveSessionIdentity(session_id, trustedProfileId, "default");
       const rawStateSessionId = usesBuiltInDefaultStateBucket
         ? "default"
         : sessionIdentity.rawSessionId;
@@ -556,6 +560,11 @@ function handleStatePost(req, res, options) {
       const codexClientEphemeral = readCodexClientEphemeral(data,
         agentId === "codex" && hookSource === "codex-official"
         && trustedProfileId === "local" && !host && !wslDistro);
+      // Only distinguishes an IDE conversation from a terminal; app ownership
+      // is verified at click time from the live process.
+      const codebuddyClient = agentId === "codebuddy" && typeof data.codebuddy_client === "string" && data.codebuddy_client.trim()
+        ? data.codebuddy_client.trim().slice(0, 64)
+        : null;
       const attachMetadata = agentId === "opencode" && hookSource === "opencode-plugin"
         && trustedProfileId === "local" && !host && !wslDistro && !headless
         && Object.hasOwn(data, "opencode_attach_url")
@@ -666,13 +675,17 @@ function handleStatePost(req, res, options) {
       const acceptedClaudeQuota = localClaudeStatuslineMetadataAllowed ? claudeQuota : null;
       if (typeof ctx.updateAccountQuota === "function"
         && (antigravityQuota || acceptedClaudeQuota || codexQuota || codexSparkQuota)) {
-        const quotaSource = trustedProfileId === "local" ? host : `remote:${trustedProfileId}`;
+        const quotaSource = codexProfile
+          ? codexProfile.quotaSource
+          : (trustedProfileId === "local" ? host : `remote:${trustedProfileId}`);
         ctx.updateAccountQuota(quotaSource, {
           antigravityQuota,
           claudeQuota: acceptedClaudeQuota,
           codexQuota,
           ...(codexSparkQuota ? { codexSparkQuota } : {}),
-          ...(trustedProfileId === "local" ? {} : { displayHost: host }),
+          ...(codexProfile
+            ? { displayHost: codexProfile.label }
+            : (trustedProfileId === "local" ? {} : { displayHost: host })),
         });
       }
       // Local Codex archive lifecycle (#655): once the local task's rollout is
@@ -690,6 +703,7 @@ function handleStatePost(req, res, options) {
         && ctx.shouldSuppressCodexArchive(sessionIdentity.rawSessionId, {
           agentId,
           profileId: trustedProfileId,
+          ...(codexProfile ? { codexProfileId: codexProfile.id } : {}),
           host,
           wslDistro,
         });
@@ -727,6 +741,7 @@ function handleStatePost(req, res, options) {
             host,
             codexOriginator,
             codexSource,
+            ...(codexProfile ? { codexProfileId: codexProfile.id } : {}),
           });
         if (!shown) {
           res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
@@ -1244,6 +1259,7 @@ function handleStatePost(req, res, options) {
             ...(recapBoundary ? { recapBoundary } : {}),
             ...((recapIsSubagent || codexHookState.headless === true) ? { recapIsSubagent: true } : {}),
             profileId: sessionIdentity.profileId,
+            ...(codexProfile ? { codexProfileId: codexProfile.id, codexProfileLabel: codexProfile.label } : {}),
             rawSessionId: rawStateSessionId,
             host,
             wslDistro,
@@ -1256,6 +1272,7 @@ function handleStatePost(req, res, options) {
             codexOriginator,
             codexSource,
             dshCarrier,
+            ...(codebuddyClient ? { codebuddyClient } : {}),
             ghosttyTerminalId,
             displayHint: display_svg,
             sessionTitle,

@@ -71,6 +71,7 @@ if (_xwaylandRelaunch) {
 }
 
 const { clampTextScale, scaleWidth, scaleHeight, resolveTextScaleForKey } = require("./text-scale");
+const { estimateHostBootTimeMs } = require("./host-boot-time");
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
@@ -196,6 +197,7 @@ const { startMobilePreviewServerSafely } = require("./network/mobile-preview-lif
 const createThemeFadeSequencer = require("./theme-fade-sequencer");
 const createThemeRuntime = require("./theme-runtime");
 const createAgentRuntimeMain = require("./agent-runtime-main");
+const { loadCodexProfiles } = require("./codex-profiles");
 const createFloatingWindowRuntime = require("./floating-window-runtime");
 const createPetWindowRuntime = require("./pet-window-runtime");
 const { createRendererConfigChannel } = require("./renderer-config-channel");
@@ -209,9 +211,10 @@ const { createMeetingModeController } = require("./meeting-mode");
 const {
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
   getSessionFocusTarget,
+  getSessionFocusWtHwnd,
   mergeSessionFocusEntry,
 } = require("./session-focus");
-const { focusCodexThreadTarget, focusDshDesktopTarget } = require("./session-focus-handoff");
+const { focusCodexThreadTarget, focusDshDesktopTarget, focusCodeBuddyIdeTarget } = require("./session-focus-handoff");
 const { publishDshFocus } = require("./dsh-focus-stream");
 const { isSessionInProgress } = require("./state-session-snapshot");
 const { restoreSessionsFromRecoveryLeases } = require("./session-recovery-loader");
@@ -2415,6 +2418,7 @@ function getPendingPermissionFocusEntry(sessionId) {
   if (entry.model) focusEntry.model = entry.model;
   if (entry.codexOriginator) focusEntry.codexOriginator = entry.codexOriginator;
   if (entry.codexSource) focusEntry.codexSource = entry.codexSource;
+  if (entry.codexProfileId) focusEntry.codexProfileId = entry.codexProfileId;
   return focusEntry;
 }
 
@@ -2556,12 +2560,14 @@ const recapRuntime = createRecapRuntime({
   onRecorded: () => settingsWindowRuntime.notifyRecapChanged(),
 });
 
+const codexProfiles = loadCodexProfiles({ logWarn: console.warn });
 const _stateCtx = {
   get theme() { return getActiveTheme(); },
   get win() { return win; },
   get hitWin() { return hitWin; },
   // Last-known account quota survives app restarts (state-account-quota.js).
   accountQuotaPersistPath: require("./state-account-quota").DEFAULT_PERSIST_PATH,
+  codexProfiles,
   recapSink: recapRuntime,
   get claudeQuotaCollectionEnabled() { return claudeQuotaCollectionEnabled; },
   get deepseekBalanceCollectionEnabled() { return deepseekBalanceCollectionEnabled; },
@@ -2867,7 +2873,7 @@ sessionAutomationCoordinator = createSessionAutomationCoordinator({
 // (kept as a pure helper so the semantics are unit-tested).
 let powerSaveBlockerId = null;
 function anySessionInProgress() {
-  if (_state.hasActiveCodexSubagents()) return true;
+  if (_state.hasActiveCodexSubagents() || _state.hasActiveQoderSubagents()) return true;
   for (const [, s] of sessions) {
     if (isSessionInProgress(s)) return true;
   }
@@ -2954,6 +2960,9 @@ const {
   killFocusHelper,
   focusTerminalWindow,
   focusProcessAppWindow,
+  findCodeBuddyMacApp,
+  findCodeBuddyWindowsApp,
+  openCodeBuddyMacApp,
   captureGhosttyTerminalId,
   clearMacFocusCooldownTimer,
 } = _focus;
@@ -2967,7 +2976,7 @@ function focusTerminalSession(session, sessionId, requestSource) {
   if (!session || (!session.sourcePid && !session.orcaPaneKey)) return false;
   return focusTerminalWindow({
     sourcePid: session.sourcePid,
-    wtHwnd: session.wtHwnd,
+    wtHwnd: getSessionFocusWtHwnd(session),
     cwd: session.cwd,
     editor: session.editor,
     pidChain: session.pidChain,
@@ -3018,6 +3027,24 @@ function focusDashboardSession(sessionId, options = {}) {
     return true;
   }
 
+  if (focusTarget.type === "codebuddy-ide") {
+    const isWindowsHost = process.platform === "win32";
+    focusCodeBuddyIdeTarget({
+      shell,
+      focusEntry,
+      sessionId: id,
+      requestSource,
+      focusLog,
+      focusTerminalSession,
+      platform: process.platform,
+      findApp: isWindowsHost ? findCodeBuddyWindowsApp : findCodeBuddyMacApp,
+      // Windows has no bundle activation; leaving openApp unset makes a build
+      // without the route (or a failed deep link) use the window focus below.
+      ...(isWindowsHost ? {} : { openApp: openCodeBuddyMacApp }),
+    });
+    return true;
+  }
+
   if (focusTarget.type === "dsh-desktop" && focusTarget.url) {
     focusDshDesktopTarget({
       shell,
@@ -3038,7 +3065,7 @@ function focusDashboardSession(sessionId, options = {}) {
   if (focusEntry.platform === "webui") {
     focusLog(`focus result branch=none reason=webui-unfocusable source=${requestSource} sid=${id}`);
   } else {
-    focusLog(`focus result branch=none reason=no-source-pid source=${requestSource} sid=${id}`);
+    focusLog(`focus result branch=none reason=${focusTarget.reason || "no-source-pid"} source=${requestSource} sid=${id}`);
   }
   return false;
 }
@@ -3257,6 +3284,11 @@ getSessionHudWindow = _sessionHud.getWindow;
 getQuotaRingWindow = _sessionHud.getQuotaRingWindow;
 
 agentRuntime = createAgentRuntimeMain({
+  // Local rollout files survive a host reboot; their old unfinished turns do
+  // not prove a Codex client has started again in this boot. Null means no
+  // boundary (uptime unavailable) and must not block startup.
+  localCodexBootTimeMs: estimateHostBootTimeMs(),
+  codexProfiles,
   getServer: () => _server,
   getStateRuntime: () => _state,
   getPermissionRuntime: () => _perm,
@@ -3287,6 +3319,9 @@ const _serverCtx = {
   get PASSTHROUGH_TOOLS() { return PASSTHROUGH_TOOLS; },
   get STATE_SVGS() { return _state.STATE_SVGS; },
   get sessions() { return sessions; },
+  getCodexProfiles: () => agentRuntime && typeof agentRuntime.getCodexProfiles === "function"
+    ? agentRuntime.getCodexProfiles()
+    : [],
   getCustomAgentIds: () => (_settingsController.get("customApplications") || [])
     .map((application) => application && application.id)
     .filter(Boolean),
@@ -5833,6 +5868,9 @@ function createWindow() {
       }
       sessionLog(`startup recovery restored sessions=${restoredSessionIds.join(",")}`);
     }
+    // Restored Qoder rows may predate delegation/archive recognition in
+    // main.sqlite; reconcile them against the native database once on launch.
+    try { agentRuntime?.sweepQoderDesktopSessions?.(); } catch {}
     void _remoteSshIpc.connectOnLaunchProfiles().catch((err) => {
       console.warn("Clawd remote-ssh: connect-on-launch failed:", err && err.message);
     });
